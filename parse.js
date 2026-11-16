@@ -187,8 +187,24 @@ const BLOCK_TAGS = new Set([
   'title', 'tr', 'track', 'ul',
 ]);
 
+// True when s contains an unescaped "[" or "]" (a bracket preceded by an
+// odd number of backslashes is escaped and does not count).
+function hasUnescapedBracket(s) {
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch !== '[' && ch !== ']') continue;
+    let bs = 0;
+    let k = i - 1;
+    while (k >= 0 && s[k] === '\\') { bs++; k--; }
+    if (bs % 2 === 0) return true;
+  }
+  return false;
+}
+
 function normalizeLabel(s) {
-  return s.replace(/\s+/g, ' ').trim().toLowerCase();
+  // Unicode case folding: "ß" / "ẞ" fold to "ss" (toLowerCase alone gives
+  // "ß", which would not match "SS").
+  return s.replace(/\s+/g, ' ').trim().toLowerCase().replace(/ß/g, 'ss');
 }
 
 // Strip leading link reference definitions from a paragraph. Returns true
@@ -1012,6 +1028,11 @@ function tryParseDef(text, pos, refs) {
   if (labelEnd < 0) return -1;
   const rawLabel = text.slice(i + 1, labelEnd - 1);
   if (rawLabel.length === 0 || rawLabel.length > 999) return -1;
+  // A reference label cannot contain brackets (nested brackets make the
+  // definition unrecognised).
+  if (hasUnescapedBracket(rawLabel)) return -1;
+  const norm = normalizeLabel(rawLabel);
+  if (norm.length === 0) return -1;
   let j = labelEnd;
   if (text[j] !== ':') return -1;
   j++;
@@ -1055,7 +1076,6 @@ function tryParseDef(text, pos, refs) {
       return -1;
     }
   }
-  const norm = normalizeLabel(rawLabel);
   if (!refs.has(norm)) refs.set(norm, { dest, title });
   return j;
 }
@@ -1467,17 +1487,20 @@ function tryReferenceLink(st, s, i, bracket) {
     if (rawLabel.length === 0) {
       const labelText = s.slice(bracket.srcStart + 1, i);
       if (labelText.length === 0 || labelText.length > 999) return null;
+      if (hasUnescapedBracket(labelText)) return null;
       const ref = st.refs.get(normalizeLabel(labelText));
       if (!ref) return null;
       return { end: labelEnd, dest: ref.dest, title: ref.title };
     }
     if (rawLabel.length > 999) return null;
+    if (hasUnescapedBracket(rawLabel)) return null;
     const ref = st.refs.get(normalizeLabel(rawLabel));
     if (!ref) return null;
     return { end: labelEnd, dest: ref.dest, title: ref.title };
   }
   const labelText = s.slice(bracket.srcStart + 1, i);
   if (labelText.length === 0 || labelText.length > 999) return null;
+  if (hasUnescapedBracket(labelText)) return null;
   const ref = st.refs.get(normalizeLabel(labelText));
   if (!ref) return null;
   return { end: i + 1, dest: ref.dest, title: ref.title };
