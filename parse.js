@@ -463,6 +463,10 @@ function buildBlocks(root, rawLines, refs) {
       if (b.t === 'quote') {
         if (!matchQuoteMarker(line)) { failIdx = i; break; }
       } else {
+        // A line that is blank after the containers matched so far is
+        // inside this item (a blank quote line ">", for example): it only
+        // makes the list loose, it does not end the item or the list.
+        if (/^[ \t]*$/.test(restOf(line))) continue;
         const saveOff = line.off;
         const saveCol = line.col;
         const r = matchItem(line, b, stack[i - 1]);
