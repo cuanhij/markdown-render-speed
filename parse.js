@@ -343,7 +343,13 @@ function buildBlocks(root, rawLines, refs) {
         if (b.t === 'quote' && !matchQuoteMarker(line)) { closeTo(i); break; }
       }
       const t = tip();
-      if (t.t === 'fence') { t.lines.push(''); continue; }
+      if (t.t === 'fence') {
+        // A blank line inside a fence keeps its spaces past the fence
+        // indent (e.g. "  " stays "  " when the fence indent is 0).
+        advanceCols(line, t.fenceIndent);
+        t.lines.push(restOf(line));
+        continue;
+      }
       if (t.t === 'code') {
         const inf = indentInfo(line);
         if (inf.cols >= 4) { advanceCols(line, 4); t.lines.push(restOf(line)); }
@@ -351,8 +357,8 @@ function buildBlocks(root, rawLines, refs) {
         continue;
       }
       if (t.t === 'html') {
-        if (t.htmlType === 7) closeTo(stack.length - 1);
-        else { t.lines.push(''); continue; }
+        if (t.htmlType >= 6) closeTo(stack.length - 1);
+        else { t.lines.push(restOf(line)); continue; }
       }
       if (tip().t === 'para') closeTo(stack.length - 1);
       for (let i = stack.length - 1; i >= 1; i--) {
@@ -562,8 +568,16 @@ function tryFence(line) {
   let n = 0;
   while (i < s.length && s[i] === ch) { n++; i++; }
   if (n < 3) return null;
-  const info = s.slice(i).replace(/^[ \t]+/, '').replace(/[ \t]+$/, '');
-  if (ch === '`' && info.indexOf('`') >= 0) return null;
+  // The info string is the first word after the fence (leading whitespace
+  // skipped, cut at the first space or tab). For a backtick fence the whole
+  // remainder of the line must not contain a backtick ("``` aa ```" is a
+  // paragraph, not a fence).
+  let infoStart = i;
+  while (infoStart < s.length && (s[infoStart] === ' ' || s[infoStart] === '\t')) infoStart++;
+  let infoEnd = infoStart;
+  while (infoEnd < s.length && s[infoEnd] !== ' ' && s[infoEnd] !== '\t') infoEnd++;
+  const info = s.slice(infoStart, infoEnd);
+  if (ch === '`' && s.slice(i).indexOf('`') >= 0) return null;
   return { fenceChar: ch, fenceLen: n, fenceIndent: inf.cols, info };
 }
 
@@ -674,6 +688,10 @@ function tryHtmlBlock(line) {
     const after = s.slice(tag.end);
     if (/^[ \t]*$/.test(after)) return { type: 7, endStr: null };
   }
+  // A block-level opening tag that spans lines ("<div id=\"foo\"" with no
+  // ">" on this line) still starts a type-6 HTML block.
+  const m6 = /^<\/?([a-zA-Z][a-zA-Z0-9-]*)([\t ]|\/?>|$)/i.exec(s);
+  if (m6 && BLOCK_TAGS.has(m6[1].toLowerCase())) return { type: 6, endStr: null };
   return null;
 }
 
@@ -1770,7 +1788,7 @@ function renderList(b, refs) {
       out += '<li>';
       const kids = item.children;
       for (let i = 0; i < kids.length; i++) {
-        out += renderBlock(kids[i], refs, true);
+        out += renderBlock(kids[i], refs, true, i === kids.length - 1);
       }
       out += '</li>\n';
     } else {
@@ -1783,7 +1801,7 @@ function renderList(b, refs) {
   return out;
 }
 
-function renderBlock(b, refs, tight) {
+function renderBlock(b, refs, tight, isLast) {
   if (b.t === 'para') {
     const text = b.lines.join('\n');
     if (tight) return inlineParse(text, refs);
@@ -1805,7 +1823,11 @@ function renderBlock(b, refs, tight) {
     return '<pre><code>' + escapeHtml(content) + '</code></pre>\n';
   }
   if (b.t === 'html') {
-    return b.lines.length ? b.lines.join('\n') + '\n' : '';
+    // HTML blocks of types 1-5 end at a closing marker and always keep a
+    // trailing newline; types 6-7 end at a blank line and keep one only
+    // when they are the last block in their parent.
+    const hasTrailing = b.htmlType <= 5 || isLast;
+    return b.lines.length ? b.lines.join('\n') + (hasTrailing ? '\n' : '') : '';
   }
   if (b.t === 'quote') {
     return '<blockquote>\n' + renderBlocks(b.children, refs, false) + '</blockquote>\n';
@@ -1818,7 +1840,7 @@ function renderBlock(b, refs, tight) {
 
 function renderBlocks(blocks, refs, tight) {
   let out = '';
-  for (const b of blocks) out += renderBlock(b, refs, tight);
+  for (let i = 0; i < blocks.length; i++) out += renderBlock(blocks[i], refs, tight, i === blocks.length - 1);
   return out;
 }
 
