@@ -112,6 +112,8 @@ function flanking(before, after) {
 
 // ---------- URLs ----------
 const NON_WORD_COLON_RE = /[^\w:]/g;
+const ANGLE_SCHEME_RE = /<([A-Za-z][A-Za-z0-9+.-]{1,31}:[^<>\x00-\x20]*)>/y;
+const ANGLE_EMAIL_RE = /<([A-Za-z0-9.!#$%&'*+\/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*)>/y;
 // Decode every entity reference (named or numeric) in a string, for the
 // dangerous-protocol check only. Unknown named entities vanish, as in
 // marked's unescape.
@@ -137,6 +139,13 @@ function unescapeEntities(s) {
 // is not a word character or a colon, and looks at the start.
 function cleanUrl(href) {
   if (href) {
+    // fast path: no entities or percent-escapes, so the raw href is
+    // already the decoded value; only the leading protocol matters
+    if (href.indexOf('&') === -1 && href.indexOf('%') === -1) {
+      const prot = href.replace(NON_WORD_COLON_RE, '').toLowerCase();
+      if (prot.indexOf('javascript:') === 0 || prot.indexOf('vbscript:') === 0 || prot.indexOf('data:') === 0) return null;
+      return href;
+    }
     let decoded;
     try {
       decoded = decodeURIComponent(unescapeEntities(href));
@@ -667,7 +676,8 @@ function scanInline(src, refs, noAuto) {
     }
     if (c === '<') {
       // angle autolink: scheme or email
-      const sm = /^<([A-Za-z][A-Za-z0-9+.-]{1,31}:[^<>\x00-\x20]*)>/.exec(src.slice(i));
+      ANGLE_SCHEME_RE.lastIndex = i;
+      const sm = ANGLE_SCHEME_RE.exec(src);
       if (sm) {
         const text = sm[1];
         if (renderHref(text) !== null) {
@@ -676,7 +686,8 @@ function scanInline(src, refs, noAuto) {
           i += sm[0].length; textStart = i; continue;
         }
       }
-      const em = /^<([A-Za-z0-9.!#$%&'*+\/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*)>/.exec(src.slice(i));
+      ANGLE_EMAIL_RE.lastIndex = i;
+      const em = ANGLE_EMAIL_RE.exec(src);
       if (em) {
         const text = em[1];
         if (renderHref('mailto:' + text) !== null) {
@@ -1070,12 +1081,19 @@ function htmlBlockEnds(type, text) {
 
 // Thematic break: 3+ of -, _, * with only spaces between.
 function isThematicBreak(text) {
-  const t = text.replace(/[ \t]/g, '');
-  if (t.length < 3) return false;
-  const ch = t[0];
+  let i = 0;
+  while (i < text.length && (text[i] === ' ' || text[i] === '\t')) i++;
+  if (i >= text.length) return false;
+  const ch = text[i];
   if (ch !== '-' && ch !== '_' && ch !== '*') return false;
-  for (let i = 1; i < t.length; i++) if (t[i] !== ch) return false;
-  return true;
+  let count = 0;
+  for (; i < text.length; i++) {
+    const c = text[i];
+    if (c === ' ' || c === '\t') continue;
+    if (c !== ch) return false;
+    count++;
+  }
+  return count >= 3;
 }
 // Setext underline: =+ or -+ with only spaces around.
 function setextLevel(text) {
