@@ -1448,7 +1448,28 @@ function tryBareEmail(s, i, textStart) {
   if (domEnd < 0) return null;
   const email = s.slice(ls, domEnd);
   if (!EMAIL_RE.test(email)) return null;
-  const href = cleanUrl('mailto:' + email);
+  // The local part must contain an alphanumeric character.
+  if (!/[a-zA-Z0-9]/.test(email.slice(0, i - ls))) return null;
+  // The character after the email must not be a valid email character,
+  // otherwise this is only a prefix of a longer (invalid) address.
+  if (domEnd < s.length && isEmailLocalChar(s[domEnd])) return null;
+  // A scheme immediately before the address ("mailto:foo@bar.baz") is
+  // part of the link.
+  let start = ls;
+  let href;
+  let text = email;
+  if (ls > 0 && s[ls - 1] === ':') {
+    let ss = ls - 1;
+    while (ss > 0 && /[a-zA-Z0-9+.-]/.test(s[ss - 1])) ss--;
+    if (ss < ls - 1 && /[a-zA-Z]/.test(s[ss])) {
+      start = ss;
+      text = s.slice(ss, domEnd);
+      href = cleanUrl(text);
+      if (href === null) return null;
+      return { end: domEnd, href, text, localStart: start };
+    }
+  }
+  href = cleanUrl('mailto:' + email);
   if (href === null) return null;
   return { end: domEnd, href, text: email, localStart: ls };
 }
