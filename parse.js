@@ -1379,13 +1379,13 @@ function tryStartBlock(line, stack, addBlock, refs, pendingBlank) {
   const fence = tryFence(line);
   if (fence) {
     closeParaTip(stack, refs);
-    // Inside a blockquote, marked keeps the fence content's leading
-    // spaces when the fence is indented 2+ (the fence indent is not
-    // stripped from content lines); a fence indented 0-1 strips
-    // normally.
+    // Inside a blockquote, marked keeps a TILDE fence's content
+    // leading spaces (the fence indent is not stripped from content
+    // lines); a backtick fence strips its indent normally. (doc-26
+    // backtick strips, doc-29 tilde keeps.)
     let fIndent = fence.fenceIndent;
     for (let q = 1; q < stack.length; q++) {
-      if (stack[q].t === 'quote' && fIndent >= 2) { fIndent = 0; break; }
+      if (stack[q].t === 'quote' && fence.fenceChar === '~' && fIndent >= 2) { fIndent = 0; break; }
     }
     const node = { t: 'fence', lines: [], fenceChar: fence.fenceChar, fenceLen: fence.fenceLen, fenceIndent: fIndent, info: fence.info };
     addBlock(node);
