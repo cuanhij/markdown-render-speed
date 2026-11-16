@@ -1775,13 +1775,92 @@ function flanking(s, i, runLen) {
   return { leftFlanking, rightFlanking, beforePunct, afterPunct };
 }
 
+// When a bracket fails to form a link, the bare URLs and emails inside
+// its label were suppressed while the bracket was active. Now that the
+// bracket stays literal text, scan its label text nodes and turn any
+// bare URL or email lying wholly inside one text node into a link node,
+// as the main scan would have done. (A URL split across nodes by a
+// delimiter or entity is left alone.) Links created here are marked
+// rescanned: if an outer link later forms around them, they are turned
+// back into text, because marked does not link bare URLs inside a
+// formed link's label.
+function rescanFailedLabel(st, s, topList, b) {
+  if (b.isImage) return;
+  let nd = b.next;
+  while (nd) {
+    if (nd.t !== 'text' || nd.so === undefined) { nd = nd.next; continue; }
+    let cur = nd;
+    let str = cur.s;
+    let base = cur.so;
+    let k = 0;
+    let done = false;
+    while (!done && k < str.length) {
+      let cand = -1;
+      let isMail = false;
+      for (let p = k; p < str.length; p++) {
+        const c = str[p];
+        if (c === '@') { cand = p; isMail = true; break; }
+        if (c === 'h' || c === 'H') {
+          const low = str.slice(p, p + 8).toLowerCase();
+          if (low.startsWith('https://') || low.startsWith('http://')) { cand = p; break; }
+        } else if (c === 'w' && str.startsWith('www.', p)) { cand = p; break; }
+      }
+      if (cand < 0) break;
+      const pos = base + cand;
+      const prev = pos > 0 ? s[pos - 1] : ' ';
+      if (!(isWsChar(prev) || prev === '*' || prev === '_' || prev === '~' || prev === '(' || prev === '[' || prev === '<')) { k = cand + 1; continue; }
+      let link = null;
+      let ls = 0, le = 0;
+      if (isMail) {
+        const em = tryBareEmail(s, pos, base);
+        if (!em || em.localStart < base || em.end > base + str.length) { k = cand + 1; continue; }
+        ls = em.localStart - base; le = em.end - base;
+        const tnode = { t: 'text', s: em.text };
+        const cl = mkList(st.nextPid++);
+        listAppend(cl, tnode);
+        link = { t: 'link', href: em.href, title: null, children: cl.head, childTail: cl.tail, rescanned: true, rescanText: tnode };
+      } else {
+        const u = tryBareUrl(s, pos);
+        if (!u || u.end > base + str.length) { k = cand + 1; continue; }
+        ls = cand; le = u.end - base;
+        const tnode = { t: 'text', s: u.text };
+        const cl = mkList(st.nextPid++);
+        listAppend(cl, tnode);
+        link = { t: 'link', href: u.href, title: null, children: cl.head, childTail: cl.tail, rescanned: true, rescanText: tnode };
+      }
+      const before = str.slice(0, ls);
+      const after = str.slice(le);
+      const afterNode = after === '' ? null : { t: 'text', s: after, so: base + le };
+      if (before === '') {
+        link.prev = cur.prev; link.next = cur.next;
+        if (link.prev) link.prev.next = link; else topList.head = link;
+        if (link.next) link.next.prev = link; else topList.tail = link;
+      } else {
+        cur.s = before;
+        link.prev = cur; link.next = cur.next;
+        if (link.next) link.next.prev = link; else topList.tail = link;
+        cur.next = link;
+      }
+      if (afterNode) {
+        afterNode.prev = link; afterNode.next = link.next;
+        if (afterNode.next) afterNode.next.prev = afterNode; else topList.tail = afterNode;
+        link.next = afterNode;
+        cur = afterNode; str = after; base = base + le; k = 0;
+      } else {
+        done = true;
+      }
+    }
+    nd = cur.next;
+  }
+}
+
 function scanInline(st, s) {
   const topList = st.topList;
   let i = 0;
   const n = s.length;
   let textStart = 0;
   const flushText = (end) => {
-    if (end > textStart) listAppend(topList, { t: 'text', s: s.slice(textStart, end) });
+    if (end > textStart) listAppend(topList, { t: 'text', s: s.slice(textStart, end), so: textStart });
   };
   while (i < n) {
     const ch = s[i];
@@ -1898,14 +1977,28 @@ function scanInline(st, s) {
       let b = st.dTail;
       while (b && (b.t !== 'bracket' || b.pid !== 0)) b = b.pd;
       if (!b) { i++; continue; }
-      if (!b.active) { delimRemove(st, b); i++; continue; }
+      if (!b.active) {
+        // An inactive bracket stays literal text: its label is
+        // released, so bare URLs/emails inside it link as usual.
+        flushText(i);
+        rescanFailedLabel(st, s, topList, b);
+        delimRemove(st, b);
+        textStart = i;
+        i++; continue;
+      }
       let linkInfo = tryInlineLink(s, i);
       if (!linkInfo) linkInfo = tryReferenceLink(st, s, i, b);
       if (!linkInfo) {
         // No link forms from this opener: drop it from the stack so a
         // later "]" can pair with an outer opener (otherwise "[link]
-        // bar](/uri)" would link the text up to the second "]").
+        // bar](/uri)" would link the text up to the second "]"). The
+        // label text is released first: bare URLs/emails inside it
+        // were suppressed while the bracket was active, and now that
+        // the bracket stays literal they link as usual.
+        flushText(i);
+        rescanFailedLabel(st, s, topList, b);
         delimRemove(st, b);
+        textStart = i;
         i++; continue;
       }
       flushText(i);
@@ -1922,6 +2015,22 @@ function scanInline(st, s) {
         while (nd) { nd.pid = childList.pid; nd = nd.next; }
         topList.tail = b;
         b.next = null;
+      }
+      // Bare URLs/emails that a failed inner bracket released into
+      // this label stay plain text now that the link forms: undo any
+      // rescan-created link nodes at the top level of the label.
+      {
+        let nd = childList.head;
+        while (nd) {
+          const nx = nd.next;
+          if (nd.t === 'link' && nd.rescanned) {
+            const txt = nd.rescanText;
+            txt.prev = nd.prev; txt.next = nd.next;
+            if (txt.prev) txt.prev.next = txt; else childList.head = txt;
+            if (txt.next) txt.next.prev = txt; else childList.tail = txt;
+          }
+          nd = nx;
+        }
       }
       if (b.isImage) {
         // The image label becomes plain alt text: no delimiter inside it
