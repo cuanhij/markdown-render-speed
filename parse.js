@@ -1278,7 +1278,11 @@ function plainText(head) {
     if (nd.t === 'text') out += decodeEntities(nd.s);
     else if (nd.t === 'entity') out += decodeEntities(nd.s);
     else if (nd.t === 'code') out += nd.s;
-    else if (nd.t === 'delim') out += nd.ch.repeat(nd.n);
+    else if (nd.t === 'delim') {
+      // Emphasis delimiters are formatting, not alt text; a delimiter
+      // that can neither open nor close is literal text and is kept.
+      if (!nd.canOpen && !nd.canClose) out += nd.ch.repeat(nd.n);
+    }
     else if (nd.t === 'bracket') out += '[';
     else if (nd.t === 'link' || nd.t === 'em' || nd.t === 'strong' || nd.t === 'del') out += plainText(nd.children);
     else if (nd.t === 'img') out += nd.alt;
@@ -1593,7 +1597,13 @@ function scanInline(st, s) {
       if (!b) { i++; continue; }
       let linkInfo = tryInlineLink(s, i);
       if (!linkInfo) linkInfo = tryReferenceLink(st, s, i, b);
-      if (!linkInfo) { i++; continue; }
+      if (!linkInfo) {
+        // No link forms from this opener: deactivate it so a later "]"
+        // cannot reuse it (otherwise "[link] bar](/uri)" would link the
+        // text up to the second "]").
+        b.active = false;
+        i++; continue;
+      }
       flushText(i);
       const href = cleanUrl(decodeEntities(linkInfo.dest));
       if (href === null) { i++; continue; }
@@ -1637,6 +1647,18 @@ function scanInline(st, s) {
         }
       }
       delimRemove(st, b);
+      // A link cannot contain another link: when a link (not an image)
+      // forms, deactivate every bracket opened before this link's opener,
+      // so no outer link can form around it. An image may sit inside a
+      // link, so forming an image deactivates nothing.
+      if (!b.isImage) {
+        let d = st.dHead;
+        while (d) {
+          const nx = d.nd;
+          if (d.t === 'bracket' && d.active) d.active = false;
+          d = nx;
+        }
+      }
       let node;
       if (b.isImage) {
         if (b.bang) listRemove(topList, b.bang);
