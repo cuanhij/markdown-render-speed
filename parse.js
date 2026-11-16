@@ -2174,6 +2174,28 @@ function wrapEmphasis(st, opener, closer, useDelims, type) {
 }
 
 function processEmphasis(st) {
+  // An outer "*" emphasis does not form when its content holds a
+  // <strong> that is preceded by whitespace and followed directly by a
+  // word character (e.g. "*a **b**c*"): the strong stays, the outer
+  // asterisks stay literal. When the strong is followed by whitespace
+  // ("*a **b** c*") or preceded by a word ("*a**b**c*"), the outer
+  // emphasis forms normally.
+  const hasBlockingStrong = (opener, closer) => {
+    let nd = opener.next;
+    while (nd && nd !== closer) {
+      if (nd.t === 'strong') {
+        const pv = nd.prev;
+        const nx = nd.next;
+        const beforeWs = pv && pv.t === 'text' && pv.s.length > 0 &&
+          (pv.s[pv.s.length - 1] === ' ' || pv.s[pv.s.length - 1] === '\t' || pv.s[pv.s.length - 1] === '\n');
+        const afterWord = nx && nx.t === 'text' && nx.s.length > 0 &&
+          !isWsChar(nx.s[0]) && nx.s[0] !== '*' && nx.s[0] !== '_';
+        if (beforeWs && afterWord) return true;
+      }
+      nd = nd.next;
+    }
+    return false;
+  };
   st.lists = new Map();
   st.lists.set(0, st.topList);
   const register = (L) => {
@@ -2205,6 +2227,12 @@ function processEmphasis(st) {
             if (sum % 3 === 0 && !(opener.n % 3 === 0 && closer.n % 3 === 0)) ok = false;
           }
           if (ok) {
+            // An em ("*") spanning a blocking <strong> does not form.
+            const wouldBeEm = ch === '*' && !((opener.n >= 2 && closer.n >= 2));
+            if (wouldBeEm && hasBlockingStrong(opener, closer)) {
+              opener = opener.pd;
+              continue;
+            }
             found = opener;
             useDelims = ch === '~' ? Math.min(opener.n, closer.n, 2) : ((opener.n >= 2 && closer.n >= 2) ? 2 : 1);
             break;
