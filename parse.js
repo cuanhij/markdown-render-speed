@@ -1864,11 +1864,7 @@ function scanInline(st, s) {
       if (tag) {
         flushText(i);
         const raw = s.slice(i, tag.end);
-        if (tag.name && DISALLOWED_TAGS.has(tag.name)) {
-          listAppend(topList, { t: 'html', s: '&lt;' + raw.slice(1) });
-        } else {
-          listAppend(topList, { t: 'html', s: raw });
-        }
+        listAppend(topList, { t: 'html', s: raw });
         i = tag.end; textStart = i;
         continue;
       }
@@ -2223,12 +2219,21 @@ function renderBlock(b, refs, tight, isLast) {
   if (b.t === 'html') {
     // Types 1-5 keep a trailing newline unless a blank line followed the
     // block; types 6-7 keep one only when the block is the last block in
-    // the document.
-    const hasTrailing = (b.htmlType <= 5 && !b.blankAfter) || isLast;
+    // the document and the source ends with a newline.
+    const hasTrailing = (b.htmlType <= 5 && !b.blankAfter) ||
+      (b.htmlType <= 5 && isLast) ||
+      (b.htmlType >= 6 && isLast && SRC_ENDS_WITH_NL);
     return b.lines.length ? b.lines.join('\n') + (hasTrailing ? '\n' : '') : '';
   }
   if (b.t === 'quote') {
-    return '<blockquote>\n' + renderBlocks(b.children, refs, false, isLast) + '</blockquote>\n';
+    // The closing tag keeps a trailing newline unless this is the last
+    // block and its last child is an HTML block (whose own trailing
+    // newline already terminates the content) or the content is empty
+    // of blocks that end with one. An empty blockquote still gets one.
+    const inner = renderBlocks(b.children, refs, false, isLast);
+    const lastChild = b.children[b.children.length - 1];
+    const trailing = (!isLast || !lastChild || lastChild.t !== 'html') ? '\n' : '';
+    return '<blockquote>\n' + inner + '</blockquote>' + trailing;
   }
   if (b.t === 'list') return renderList(b, refs, isLast);
   if (b.t === 'table') return renderTable(b, refs);
@@ -2246,8 +2251,13 @@ function renderBlocks(blocks, refs, tight, parentIsLast) {
 
 // ---- entry point ----
 
+// Whether the (normalized) source ends with a newline: a trailing HTML
+// block of type 6-7 keeps its final newline only then.
+let SRC_ENDS_WITH_NL = true;
+
 export function parse(input) {
   const src = String(input).replace(/\r\n?/g, '\n');
+  SRC_ENDS_WITH_NL = src.endsWith('\n');
   const lines = src.split('\n');
   if (lines.length && lines[lines.length - 1] === '') lines.pop();
   const refs = new Map();
