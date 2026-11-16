@@ -1130,6 +1130,39 @@ function labelHasEmBacktickCode(s, start, end) {
   }
   return false;
 }
+// A link does not form when its label holds a backtick code span (a
+// run of >= 2 backticks whose matching closer leaves a backtick inside
+// the content) followed by more label text: doc-18 full reference
+// "[empty test `` a ` b `` output][all-40]", doc-22/30 inline
+// "[public updates `` a ` b `` in uses](...)" / "[first heading
+// `` a ` b `` of](...)". When the same code span ends the label the
+// link forms (doc-03/05/10/20/23/33); a plain code span in the middle
+// forms too (doc-14 ``open``). This subsumes labelHasEmBacktickCode
+// for the link itself (doc-16/20/23 are mid-label as well); the
+// underscore case still needs its own suppression flag.
+function labelHasMidBacktickCode(s, start, end) {
+  let i = start;
+  while (i < end) {
+    if (s[i] !== '`') { i++; continue; }
+    let run = 0;
+    while (i + run < end && s[i + run] === '`') run++;
+    if (run < 2) { i += run; continue; }
+    let j = i + run;
+    let close = -1;
+    while (j < end) {
+      if (s[j] === '`') {
+        let r2 = 0;
+        while (j + r2 < end && s[j + r2] === '`') r2++;
+        if (r2 === run) { close = j; break; }
+        j += r2;
+      } else j++;
+    }
+    if (close < 0) return false;
+    if (s.slice(i + run, close).indexOf('`') >= 0 && close + run < end) return true;
+    i = close + run;
+  }
+  return false;
+}
 function hasEmUnderscore(s, from, to) {
   for (let p = from; p < to; p++) {
     if (s[p] !== '_') continue;
@@ -2076,7 +2109,10 @@ function scanInline(st, s) {
       let linkInfo = tryInlineLink(s, i);
       if (!linkInfo) linkInfo = tryReferenceLink(st, s, i, b);
       let emBacktick = false;
-      if (linkInfo && labelHasEmBacktickCode(s, b.srcStart + 1, i)) { linkInfo = null; emBacktick = true; }
+      if (linkInfo && labelHasMidBacktickCode(s, b.srcStart + 1, i)) {
+        linkInfo = null;
+        if (labelHasEmBacktickCode(s, b.srcStart + 1, i)) emBacktick = true;
+      }
       if (!linkInfo) {
         // No link forms from this opener: drop it from the stack so a
         // later "]" can pair with an outer opener (otherwise "[link]
