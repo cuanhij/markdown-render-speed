@@ -490,8 +490,13 @@ function buildBlocks(root, rawLines, refs) {
       if (pendingBlank) {
         const pi = stack.indexOf(pendingBlank.item);
         if (pi >= failIdx) {
-          for (let i = failIdx - 1; i >= 1; i--) {
-            if (stack[i].t === 'item') { stack[i - 1].tight = false; break; }
+          // A blank line between two items of the same list only makes
+          // that list loose, not its ancestors.
+          const sameListNewItem = newItem && stack[failIdx - 1] === pendingBlank.list;
+          if (!sameListNewItem) {
+            for (let i = failIdx - 1; i >= 1; i--) {
+              if (stack[i].t === 'item') { stack[i - 1].tight = false; break; }
+            }
           }
           // A new item of the list at failIdx-1, after a blank line that
           // occurred inside the item at failIdx, makes that list loose.
@@ -1511,8 +1516,9 @@ function tryBareEmail(s, i, textStart) {
   // The local part must contain an alphanumeric character.
   if (!/[a-zA-Z0-9]/.test(email.slice(0, i - ls))) return null;
   // The character after the email must not be a valid email character,
-  // otherwise this is only a prefix of a longer (invalid) address.
-  if (domEnd < s.length && isEmailLocalChar(s[domEnd])) return null;
+  // otherwise this is only a prefix of a longer (invalid) address. A
+  // trailing "." is sentence punctuation, not part of the address.
+  if (domEnd < s.length && isEmailLocalChar(s[domEnd]) && s[domEnd] !== '.') return null;
   // A scheme immediately before the address ("mailto:foo@bar.baz") is
   // part of the link.
   let start = ls;
