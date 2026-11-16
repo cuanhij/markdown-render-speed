@@ -426,7 +426,10 @@ function buildBlocks(root, rawLines, refs) {
       }
       if (t.t === 'code') {
         const inf = indentInfo(line);
-        if (inf.cols >= 4) { advanceCols(line, 4); t.lines.push(expandTabs(restOf(line), line.col)); }
+        // After the 4-column indent is stripped (advanceCols consumes a
+        // tab that straddles the boundary), the rest of the line is
+        // literal code content: a leading tab there stays a tab.
+        if (inf.cols >= 4) { advanceCols(line, 4); t.lines.push(restOf(line)); }
         else t.lines.push('');
         continue;
       }
@@ -590,7 +593,7 @@ function buildBlocks(root, rawLines, refs) {
       const inf = indentInfo(line);
       if (inf.cols >= 4) {
         advanceCols(line, 4);
-        t.lines.push(expandTabs(restOf(line), line.col));
+        t.lines.push(restOf(line));
         pendingBlank = null;
         continue;
       }
