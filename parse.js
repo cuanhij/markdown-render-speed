@@ -2518,6 +2518,22 @@ function processEmphasis(st) {
             if (sum % 3 === 0 && !(opener.n % 3 === 0 && closer.n % 3 === 0)) ok = false;
           }
           if (ok) {
+            // A closer with fewer delimiters than its opener must not
+            // "steal" from the opener when a later closer could form a
+            // strong with it ("**a *b*c* d**": the lone "*" stays
+            // literal and the "**" pair forms a strong).
+            if (ch !== '~' && closer.n < opener.n) {
+              let later = closer.nd;
+              let hasLaterStrong = false;
+              while (later) {
+                if (later.t === 'delim' && later.pid === closer.pid && later.ch === ch) {
+                  if (later.canOpen && later.n >= opener.n) break;
+                  if (later.canClose && later.n >= opener.n) { hasLaterStrong = true; break; }
+                }
+                later = later.nd;
+              }
+              if (hasLaterStrong) { opener = opener.pd; continue; }
+            }
             // An em ("*") spanning a blocking <strong> does not form.
             const wouldBeEm = ch === '*' && !((opener.n >= 2 && closer.n >= 2));
             if (wouldBeEm && hasBlockingStrong(opener, closer)) {
