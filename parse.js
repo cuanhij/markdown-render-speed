@@ -436,10 +436,10 @@ function buildBlocks(root, rawLines, refs) {
       }
       if (tip().t === 'para') closeTo(stack.length - 1);
       // A blank line ends a table (later lines are not body rows), but a
-      // line that is only whitespace (e.g. a tab) is an empty table row,
-      // not a blank line: it stays in the table.
+      // line that is only a tab is an empty table row, not a blank line:
+      // it stays in the table. A spaces-only line ends the table.
       if (tip().t === 'table') {
-        if (line.s.length > 0 && tryTableRow(line, tip())) { pendingBlank = null; continue; }
+        if (line.s.indexOf('\t') >= 0 && tryTableRow(line, tip())) { pendingBlank = null; continue; }
         closeTo(stack.length - 1);
       }
       // A blank line only makes a list loose when it separates two blocks
@@ -1723,16 +1723,22 @@ function scanInline(st, s) {
       continue;
     }
     if (ch === ']') {
+      // The "]" pairs with the nearest unmatched opener. If that opener
+      // is inactive (a link already formed inside it), no link forms
+      // from this "]" and the opener is dropped, so a later "]" can pair
+      // with a farther opener ("![[[foo](uri1)](uri2)](uri3)" pairs the
+      // outermost image with "(uri3)").
       let b = st.dTail;
-      while (b && (b.t !== 'bracket' || !b.active || b.pid !== 0)) b = b.pd;
+      while (b && (b.t !== 'bracket' || b.pid !== 0)) b = b.pd;
       if (!b) { i++; continue; }
+      if (!b.active) { delimRemove(st, b); i++; continue; }
       let linkInfo = tryInlineLink(s, i);
       if (!linkInfo) linkInfo = tryReferenceLink(st, s, i, b);
       if (!linkInfo) {
-        // No link forms from this opener: deactivate it so a later "]"
-        // cannot reuse it (otherwise "[link] bar](/uri)" would link the
-        // text up to the second "]").
-        b.active = false;
+        // No link forms from this opener: drop it from the stack so a
+        // later "]" can pair with an outer opener (otherwise "[link]
+        // bar](/uri)" would link the text up to the second "]").
+        delimRemove(st, b);
         i++; continue;
       }
       flushText(i);
