@@ -560,14 +560,27 @@ function buildBlocks(root, rawLines, refs) {
           // The strip allowance is the virtual indent of the containers
           // that failed to match (2 per block quote, or a list item's
           // content indent) plus the 3 spaces a paragraph continuation
-          // may carry.
+          // may carry. But when a block quote matched for this line,
+          // the spaces after its marker are paragraph content, not
+          // container indentation: marked keeps them.
           let strip = 3;
           let itemIndent = -1;
-          for (let k = failIdx; k < stack.length; k++) {
-            if (stack[k].t === 'quote') strip += 2;
-            else if (stack[k].t === 'item') itemIndent = stack[k].contentIndent;
+          // Spaces after a quote marker are paragraph content (kept)
+          // only when the paragraph also sits inside a list item: a
+          // lazy line in a bare quote (cm-238) has its spaces stripped.
+          let hasQuote = false, hasItem = false;
+          for (let k = 1; k < stack.length; k++) {
+            if (stack[k].t === 'quote') hasQuote = true;
+            if (stack[k].t === 'item') hasItem = true;
           }
-          if (itemIndent >= 0) strip = itemIndent + 3;
+          if (hasQuote && hasItem) strip = 0;
+          else {
+            for (let k = failIdx; k < stack.length; k++) {
+              if (stack[k].t === 'quote') strip += 2;
+              else if (stack[k].t === 'item') itemIndent = stack[k].contentIndent;
+            }
+            if (itemIndent >= 0) strip = itemIndent + 3;
+          }
           let si = 0;
           while (si < content.length && si < strip && content[si] === ' ') si++;
           content = content.slice(si);
@@ -1245,7 +1258,11 @@ function tryStartBlock(line, stack, addBlock, refs, pendingBlank) {
   const fence = tryFence(line);
   if (fence) {
     closeParaTip(stack, refs);
-    const node = { t: 'fence', lines: [], fenceChar: fence.fenceChar, fenceLen: fence.fenceLen, fenceIndent: fence.fenceIndent, info: fence.info };
+    // Inside a blockquote, marked keeps the fence content's leading
+    // spaces (the fence indent is not stripped from content lines).
+    let fIndent = fence.fenceIndent;
+    for (let q = 1; q < stack.length; q++) if (stack[q].t === 'quote') { fIndent = 0; break; }
+    const node = { t: 'fence', lines: [], fenceChar: fence.fenceChar, fenceLen: fence.fenceLen, fenceIndent: fIndent, info: fence.info };
     addBlock(node);
     stack.push(node);
     return true;
