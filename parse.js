@@ -333,6 +333,13 @@ function buildBlocks(root, rawLines, refs) {
       if (parent === pendingBlank.item ||
           (node.t === 'item' && parent === pendingBlank.list)) {
         pendingBlank.list.tight = false;
+      } else if (parent.t === 'item') {
+        // The blank line was inside a descendant of this item, and the new
+        // block is a sibling of that descendant inside this item, so this
+        // item's list is loose too.
+        const pi = stack.indexOf(pendingBlank.item);
+        const ppi = stack.indexOf(parent);
+        if (pi > ppi) stack[ppi - 1].tight = false;
       }
     }
     parent.children.push(node);
@@ -371,9 +378,11 @@ function buildBlocks(root, rawLines, refs) {
         else { t.lines.push(restOf(line)); continue; }
       }
       if (tip().t === 'para') closeTo(stack.length - 1);
-      for (let i = stack.length - 1; i >= 1; i--) {
-        if (stack[i].t === 'item') { pendingBlank = { item: stack[i], list: stack[i - 1] }; break; }
-      }
+      // A blank line only makes a list loose when it separates two blocks
+      // that are children of the same item, so only record it when the
+      // tip itself is the item (not a block nested inside it, e.g. a
+      // quote).
+      if (tip().t === 'item') pendingBlank = { item: tip(), list: stack[stack.length - 2] };
       continue;
     }
 
@@ -406,6 +415,22 @@ function buildBlocks(root, rawLines, refs) {
       }
     }
     if (failIdx < stack.length) {
+      // If a blank line is pending inside a block that is about to be
+      // closed, the blank line separates two blocks inside the nearest
+      // ancestor item that stays open, so that item's list is loose.
+      if (pendingBlank) {
+        const pi = stack.indexOf(pendingBlank.item);
+        if (pi >= failIdx) {
+          for (let i = failIdx - 1; i >= 1; i--) {
+            if (stack[i].t === 'item') { stack[i - 1].tight = false; break; }
+          }
+          // A new item of the list at failIdx-1, after a blank line that
+          // occurred inside the item at failIdx, makes that list loose.
+          if (newItem && pi > failIdx && stack[failIdx - 1].t === 'list') {
+            stack[failIdx - 1].tight = false;
+          }
+        }
+      }
       if (newItem) {
         closeTo(failIdx);
       } else if (tip().t === 'para') {
@@ -421,9 +446,7 @@ function buildBlocks(root, rawLines, refs) {
           // the paragraph; the containers stay open (the list becomes
           // loose) so later content can re-enter them.
           closeTo(stack.length - 1);
-          for (let i = stack.length - 1; i >= 1; i--) {
-            if (stack[i].t === 'item') { pendingBlank = { item: stack[i], list: stack[i - 1] }; break; }
-          }
+          if (tip().t === 'item') pendingBlank = { item: tip(), list: stack[stack.length - 2] };
         } else if (isThematicBreak(line) || tryAtx(line) || tryFence(line) ||
             parseListMarker(line) || isQuoteStart(line) ||
             (hb && hb.type !== 7)) {
@@ -523,9 +546,7 @@ function buildBlocks(root, rawLines, refs) {
       const rest = restOf(line);
       if (rest === '') {
         if (tip().t === 'para') closeTo(stack.length - 1);
-        for (let i = stack.length - 1; i >= 1; i--) {
-          if (stack[i].t === 'item') { pendingBlank = { item: stack[i], list: stack[i - 1] }; break; }
-        }
+        if (tip().t === 'item') pendingBlank = { item: tip(), list: stack[stack.length - 2] };
         continue;
       }
       if (/^[ \t]+$/.test(rest)) {
@@ -1189,7 +1210,10 @@ function isPunctChar(ch) {
   return UNICODE_PUNCT_RE.test(ch);
 }
 function isWsChar(ch) {
-  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\x0B' || ch === '\x0C';
+  const c = ch.charCodeAt(0);
+  return c === 32 || c === 9 || c === 10 || c === 11 || c === 12 || c === 13 ||
+    c === 133 || c === 160 || c === 5760 || (c >= 8192 && c <= 8202) ||
+    c === 8239 || c === 8287 || c === 12288;
 }
 
 const ENTITY_STICKY = /&(#\d+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);/y;
@@ -1748,10 +1772,11 @@ function wrapEmphasis(st, opener, closer, useDelims, type) {
     opener.n = useDelims;
     syncListOwner(L);
   }
+  let closerRem = null;
   if (closer.n > useDelims) {
-    const rem = { t: 'delim', ch: closer.ch, n: closer.n - useDelims, canOpen: closer.canOpen, canClose: closer.canClose, active: true };
-    nodeInsertAfter(L, rem, closer);
-    delimInsertAfter(st, rem, closer);
+    closerRem = { t: 'delim', ch: closer.ch, n: closer.n - useDelims, canOpen: closer.canOpen, canClose: closer.canClose, active: true };
+    nodeInsertAfter(L, closerRem, closer);
+    delimInsertAfter(st, closerRem, closer);
     closer.n = useDelims;
     syncListOwner(L);
   }
@@ -1779,6 +1804,7 @@ function wrapEmphasis(st, opener, closer, useDelims, type) {
   syncListOwner(L);
   delimRemove(st, opener);
   delimRemove(st, closer);
+  return closerRem;
 }
 
 function processEmphasis(st) {
@@ -1822,7 +1848,11 @@ function processEmphasis(st) {
       }
       if (found) {
         const type = ch === '~' ? 'del' : (useDelims === 2 ? 'strong' : 'em');
-        wrapEmphasis(st, found, closer, useDelims, type);
+        const rem = wrapEmphasis(st, found, closer, useDelims, type);
+        // A closer with delimiters left over must be re-examined: it may
+        // close another opener (e.g. "***" closing "**" for strong and
+        // then "*" for em).
+        if (rem) { closer = rem; continue; }
       }
     }
     closer = nextCloser;
