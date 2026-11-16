@@ -1036,6 +1036,40 @@ function scanLabel(text, i) {
   return -1;
 }
 
+// Find the ']' that closes a link label starting at text[from] (just
+// past the '['), the way marked's bracket scan does: a code span runs
+// from a backtick run to the next backtick run (any length) and may
+// swallow '[' and ']' characters; nested brackets nest. A backtick run
+// with no later backtick is literal text. Returns the index of the
+// closing ']' or -1.
+function findLabelClose(text, from) {
+  const n = text.length;
+  let depth = 0;
+  let j = from;
+  while (j < n) {
+    const ch = text[j];
+    if (ch === '\\' && j + 1 < n) { j += 2; continue; }
+    if (ch === '`') {
+      let k = j;
+      while (k < n && text[k] === '`') k++;
+      let m = k;
+      while (m < n && text[m] !== '`') m++;
+      if (m >= n) { j = k; continue; }
+      let e = m;
+      while (e < n && text[e] === '`') e++;
+      j = e;
+      continue;
+    }
+    if (ch === '[') { depth++; j++; continue; }
+    if (ch === ']') {
+      if (depth === 0) return j;
+      depth--; j++; continue;
+    }
+    j++;
+  }
+  return -1;
+}
+
 function scanAngleDest(text, j) {
   let k = j + 1;
   const n = text.length;
@@ -1753,6 +1787,19 @@ function scanInline(st, s) {
       const runLen = k - i;
       const close = findCodeSpanEnd(s, k, runLen);
       if (close < 0) { i = k; continue; }
+      // A code span must not swallow the ']' that closes an open link
+      // label: if it would, the backticks stay literal and the link
+      // forms instead (the label's own bracket scan pairs backtick runs
+      // consecutively, so it finds that ']').
+      const brk = s.indexOf(']', k);
+      if (brk >= 0 && brk < close) {
+        let b = st.dTail;
+        while (b && (b.t !== 'bracket' || b.pid !== 0)) b = b.pd;
+        if (b && b.active) {
+          const closeIdx = findLabelClose(s, b.srcStart + 1);
+          if (closeIdx > i && closeIdx < close) { i = k; continue; }
+        }
+      }
       let content = s.slice(k, close - runLen).replace(/\n/g, ' ');
       if (content.length >= 2 && content[0] === ' ' && content[content.length - 1] === ' ' && !/^[ ]+$/.test(content)) {
         content = content.slice(1, -1);
