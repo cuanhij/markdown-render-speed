@@ -509,8 +509,13 @@ function buildBlocks(root, rawLines, refs) {
         const pi = stack.indexOf(pendingBlank.item);
         if (pi >= failIdx) {
           // A blank line between two items of the same list only makes
-          // that list loose, not its ancestors.
-          const sameListNewItem = newItem && stack[failIdx - 1] === pendingBlank.list;
+          // that list loose, not its ancestors. The new item is of the
+          // list at failIdx-1; the blank line sits inside that list
+          // when its item is deeper in the stack (an item of the list,
+          // or nested inside one), even if it is not directly in
+          // pendingBlank.list.
+          const sameListNewItem = newItem && stack[failIdx - 1].t === 'list' &&
+            pi > failIdx - 1;
           if (!sameListNewItem) {
             for (let i = failIdx - 1; i >= 1; i--) {
               if (stack[i].t === 'item') { stack[i - 1].tight = false; break; }
@@ -1611,7 +1616,10 @@ function tryBareEmail(s, i, textStart) {
         while (k < s.length && (s[k] === ' ' || s[k] === '\t')) k++;
         if (k >= s.length || s[k] === '\n') return null;
         // more text follows on this line: the "_" closes emphasis
-      } else return null;
+      }
+      // A non-whitespace character after the "_" is also more text on
+      // the same line (e.g. "_,"), so the "_" closes emphasis and the
+      // email is complete.
     } else if (isAlnumCode(after.charCodeAt(0)) || after === '-' || after === '+') return null;
   }
   // A scheme immediately before the address ("mailto:foo@bar.baz") is
