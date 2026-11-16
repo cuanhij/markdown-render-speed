@@ -496,10 +496,15 @@ function buildBlocks(root, rawLines, refs) {
         }
         if (r === 2) { failIdx = i; newItem = true; break; }
         // A fenced code block's content lines do not need to match the
-        // list item's content indent: the line stays in the fence (the
-        // fence indent is stripped from whatever is there by the leaf
-        // continuation below). A block quote marker is still required.
-        if (tip().t === 'fence') { failIdx = stack.length; break; }
+        // list item's content indent once the fence already holds a
+        // content line (the fence indent is stripped from whatever is
+        // there by the leaf continuation below). But the FIRST content
+        // line must match the item: a line at column 0 right after the
+        // opener closes the item and leaves the fence empty (marked
+        // renders it as an empty fence, doc-17/23/38), while a later
+        // unindented line stays fence content (doc-02). A block quote
+        // marker is still required.
+        if (tip().t === 'fence' && tip().lines.length > 0) { failIdx = stack.length; break; }
         failIdx = i; break;
       }
     }
