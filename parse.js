@@ -1099,6 +1099,83 @@ function findLabelClose(text, from) {
   return -1;
 }
 
+// marked leaves a link literal when its label holds an underscore-
+// emphasis pair around a code span whose content itself contains a
+// backtick (doc-16/20/23: "[at _node `` a ` b ``_](...)" stays literal,
+// and the "_..._" stays literal too). A backtick code span without the
+// surrounding underscore emphasis does form a link (doc-03/05/10), and
+// a plain code span inside underscore emphasis does too (doc-03/07/21).
+function labelHasEmBacktickCode(s, start, end) {
+  let i = start;
+  while (i < end) {
+    if (s[i] !== '`') { i++; continue; }
+    let run = 0;
+    while (i + run < end && s[i + run] === '`') run++;
+    if (run < 2) { i += run; continue; }
+    let j = i + run;
+    let close = -1;
+    while (j < end) {
+      if (s[j] === '`') {
+        let r2 = 0;
+        while (j + r2 < end && s[j + r2] === '`') r2++;
+        if (r2 === run) { close = j; break; }
+        j += r2;
+      } else j++;
+    }
+    if (close < 0) return false;
+    if (s.slice(i + run, close).indexOf('`') >= 0) {
+      if (hasEmUnderscore(s, start, i) && hasEmUnderscoreClose(s, close + run, end)) return true;
+    }
+    i = close + run;
+  }
+  return false;
+}
+function hasEmUnderscore(s, from, to) {
+  for (let p = from; p < to; p++) {
+    if (s[p] !== '_') continue;
+    const f = flanking(s, p, 1);
+    if (f.leftFlanking && (!f.rightFlanking || f.beforePunct)) return true;
+  }
+  return false;
+}
+function hasEmUnderscoreClose(s, from, to) {
+  for (let p = from; p < to; p++) {
+    if (s[p] !== '_') continue;
+    const f = flanking(s, p, 1);
+    if (f.rightFlanking && (!f.leftFlanking || f.afterPunct)) return true;
+  }
+  return false;
+}
+
+// In a link label that stays literal because it holds an underscore
+// emphasis pair around a backtick code span, the underscore delimiters
+// must also stay literal (marked does not form the emphasis there
+// either, doc-16/20/23). Remove the nearest openable '_' delimiter
+// before and the nearest closable '_' delimiter after each backtick
+// code span in the label from the delimiter stack, so processEmphasis
+// cannot pair them. (Outside a link label the same emphasis does form,
+// so this is only done for a label that failed to link for this reason.)
+function suppressEmBacktickCode(st, b) {
+  const nodes = [];
+  let nd = b.next;
+  while (nd) { nodes.push(nd); nd = nd.next; }
+  for (let k = 0; k < nodes.length; k++) {
+    const node = nodes[k];
+    if (node.t !== 'code' || node.s.indexOf('`') < 0) continue;
+    let opener = null;
+    for (let m = k - 1; m >= 0; m--) {
+      const c = nodes[m];
+      if (c.t === 'delim' && c.ch === '_' && c.n === 1 && c.canOpen) { opener = c; break; }
+    }
+    let closer = null;
+    for (let m = k + 1; m < nodes.length; m++) {
+      const c = nodes[m];
+      if (c.t === 'delim' && c.ch === '_' && c.n === 1 && c.canClose) { closer = c; break; }
+    }
+    if (opener && closer) { delimRemove(st, opener); delimRemove(st, closer); }
+  }
+}
+
 function scanAngleDest(text, j) {
   let k = j + 1;
   const n = text.length;
@@ -1998,6 +2075,8 @@ function scanInline(st, s) {
       }
       let linkInfo = tryInlineLink(s, i);
       if (!linkInfo) linkInfo = tryReferenceLink(st, s, i, b);
+      let emBacktick = false;
+      if (linkInfo && labelHasEmBacktickCode(s, b.srcStart + 1, i)) { linkInfo = null; emBacktick = true; }
       if (!linkInfo) {
         // No link forms from this opener: drop it from the stack so a
         // later "]" can pair with an outer opener (otherwise "[link]
@@ -2006,6 +2085,7 @@ function scanInline(st, s) {
         // were suppressed while the bracket was active, and now that
         // the bracket stays literal they link as usual.
         flushText(i);
+        if (emBacktick) suppressEmBacktickCode(st, b);
         rescanFailedLabel(st, s, topList, b);
         delimRemove(st, b);
         textStart = i;
