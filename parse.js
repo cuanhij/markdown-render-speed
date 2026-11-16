@@ -313,6 +313,7 @@ function matchItem(line, item, list) {
 function buildBlocks(root, rawLines, refs) {
   const stack = [root];
   let pendingBlank = null; // { item, list } set by a structural blank line
+  let lastAdded = null; // most recently added block (for HTML blankAfter)
   const tip = () => stack[stack.length - 1];
 
   function closeTo(n) {
@@ -343,6 +344,7 @@ function buildBlocks(root, rawLines, refs) {
       }
     }
     parent.children.push(node);
+    lastAdded = node;
     return node;
   }
 
@@ -351,6 +353,13 @@ function buildBlocks(root, rawLines, refs) {
 
     // ---- blank line ----
     if (lineBlank(line)) {
+      // An HTML block of types 1-5 followed by a blank line loses its
+      // trailing newline (but a blank line inside a still-open HTML block
+      // is part of the block, not after it).
+      if (lastAdded && lastAdded.t === 'html' && lastAdded.htmlType <= 5 &&
+          stack.indexOf(lastAdded) < 0) {
+        lastAdded.blankAfter = true;
+      }
       // A blank line must carry a block quote marker to stay inside a
       // quote; without one it closes the quote (and any fence inside it).
       for (let i = 1; i < stack.length; i++) {
@@ -500,8 +509,12 @@ function buildBlocks(root, rawLines, refs) {
     // ---- leaf continuation ----
     let t = tip();
     if (t.t === 'fence') {
-      if (isClosingFence(line, t)) closeTo(stack.length - 1);
-      else {
+      if (isClosingFence(line, t)) {
+        // The blank line immediately before the closing fence is the
+        // block's terminator, not a content line.
+        if (t.lines.length && t.lines[t.lines.length - 1] === '') t.lines.pop();
+        closeTo(stack.length - 1);
+      } else {
         advanceCols(line, t.fenceIndent);
         t.lines.push(restOf(line));
       }
@@ -1413,9 +1426,14 @@ function tryInlineLink(s, i) {
     j = d.end;
   } else {
     const d = scanBareDest(s, j);
-    if (!d) return null;
-    dest = d.dest;
-    j = d.end;
+    if (!d) {
+      // An empty destination is valid ("[link]()", or "[link]( 'title')").
+      if (s[j] === ')' || s[j] === '"' || s[j] === "'" || s[j] === '(') dest = '';
+      else return null;
+    } else {
+      dest = d.dest;
+      j = d.end;
+    }
   }
   const saveJ = j;
   j = skipWsAndNewlines(s, j);
@@ -1958,10 +1976,10 @@ function renderBlock(b, refs, tight, isLast) {
     return '<pre><code>' + escapeHtml(content) + '</code></pre>\n';
   }
   if (b.t === 'html') {
-    // Types 1-5 (pre/script/style/textarea, comment, PI, declaration,
-    // CDATA) always keep a trailing newline; types 6-7 keep one only when
-    // the block is the last block in the document.
-    const hasTrailing = b.htmlType <= 5 || isLast;
+    // Types 1-5 keep a trailing newline unless a blank line followed the
+    // block; types 6-7 keep one only when the block is the last block in
+    // the document.
+    const hasTrailing = (b.htmlType <= 5 && !b.blankAfter) || isLast;
     return b.lines.length ? b.lines.join('\n') + (hasTrailing ? '\n' : '') : '';
   }
   if (b.t === 'quote') {
