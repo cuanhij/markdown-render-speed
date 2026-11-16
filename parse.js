@@ -663,13 +663,14 @@ function buildBlocks(root, rawLines, refs) {
 
     // ---- paragraph continuation / new paragraph ----
     // A paragraph line keeps its leading spaces (marked does not strip
-    // them: " *-*" keeps the space, "Foo\n    ***" keeps all four).
+    // them: " *-*" keeps the space, "Foo\n    ***" keeps all four), but
+    // a leading tab is expanded to spaces from the current column.
     if (tip().t === 'para') {
       const p = tip();
-      p.lines.push(restOf(line));
+      p.lines.push(expandTabs(restOf(line), line.col));
       p.lineCount++;
     } else {
-      const p = { t: 'para', lines: [restOf(line)], lineCount: 1, text: '' };
+      const p = { t: 'para', lines: [expandTabs(restOf(line), line.col)], lineCount: 1, text: '' };
       addBlock(p);
       stack.push(p);
     }
@@ -1162,7 +1163,7 @@ function closeParaTip(stack, refs) {
 }
 
 function startParagraph(line, stack, addBlock) {
-  const p = { t: 'para', lines: [restOf(line)], lineCount: 1, text: '' };
+  const p = { t: 'para', lines: [expandTabs(restOf(line), line.col)], lineCount: 1, text: '' };
   addBlock(p);
   stack.push(p);
 }
