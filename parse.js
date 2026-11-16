@@ -543,8 +543,12 @@ function buildBlocks(root, rawLines, refs) {
         if (/^[ \t]*$/.test(restOf(line))) {
           // A blank line inside the containers that did match only closes
           // the paragraph; the containers stay open (the list becomes
-          // loose) so later content can re-enter them.
-          closeTo(stack.length - 1);
+          // loose) so later content can re-enter them. But a container
+          // that failed to match this line cannot stay open: a block
+          // quote whose marker is missing on a blank line ends here (a
+          // later "> >" line opens a new inner quote), so close it too.
+          if (failIdx < stack.length) closeTo(failIdx);
+          else closeTo(stack.length - 1);
           if (tip().t === 'item') pendingBlank = { item: tip(), list: stack[stack.length - 2] };
         } else if (isThematicBreak(line) || tryAtx(line) || tryFence(line) ||
             parseListMarker(line) || isQuoteStart(line) ||
