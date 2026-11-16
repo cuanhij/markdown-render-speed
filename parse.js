@@ -40,6 +40,13 @@ function isAlphaNumCh(ch) {
   return /[\p{L}\p{N}]/u.test(ch);
 }
 
+// Word characters for an email/URL boundary: [A-Za-z0-9._+-].
+function isWordCh(ch) {
+  const c = ch.charCodeAt(0);
+  if (c < 128) return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 46 || c === 95 || c === 43 || c === 45;
+  return false;
+}
+
 function isWhitespaceCh(ch) {
   return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\f' || ch === '\v' || ch === '\u00a0' || ch === '\u1680' || (ch >= '\u2000' && ch <= '\u200a') || ch === '\u2028' || ch === '\u2029' || ch === '\u202f' || ch === '\u205f' || ch === '\u3000' || ch === '\ufeff';
 }
@@ -281,7 +288,9 @@ function expandTabs(line, col) {
 // delimiter run (turned into em/strong/del by the delimiter stack),
 // ['em', children], ['strong', children], ['del', children].
 
-const SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]{1,31}:\/\//;
+// next character that needs individual handling in the inline scanner
+// (a token starter, an escape, an entity, a newline, or whitespace)
+const NEXT_SPECIAL = /[\[!`*_~<\\&\n \t]/g;
 
 function backpedal(s) {
   // marked's _backpedal, scanned left to right like its regex:
@@ -747,23 +756,32 @@ function tryUrl(src, i, prevCh) {
     let end = rest.end;
     if (proto === 'xmpp:' && end < n && src[end] === '/') {
       let k = end + 1;
-      while (k < n && /[A-Za-z0-9@.]/.test(src[k])) k++;
+      while (k < n && (isAlphaNumCh(src[k]) || src[k] === '@' || src[k] === '.')) k++;
       if (k > end + 1) end = k;
     }
     const text = src.slice(i, end);
     return { end, href: text, text, fullEnd: rest.fullEnd };
   }
-  // scheme://
-  const m = SCHEME_RE.exec(src.slice(i, i + 40));
-  if (m) {
-    let j = i + m[0].length;
-    while (j < n && src[j] !== ' ' && src[j] !== '\t' && src[j] !== '\n' && src[j] !== '<') j++;
-    let text = backpedal(src.slice(i, j));
-    if (text.length <= m[0].length) return null;
-    return { end: i + text.length, href: text, text };
+  // scheme:// — the GFM url rule only allows http, https, ftp
+  // (case-insensitive), so check those prefixes directly instead of a
+  // regex over a fresh slice at every word start
+  const c0 = src.charCodeAt(i);
+  if (c0 === 104 || c0 === 72 || c0 === 102 || c0 === 70) { // h/H/f/F
+    const low = src.slice(i, i + 8).toLowerCase();
+    let protoLen = 0;
+    if (low.startsWith('https://')) protoLen = 8;
+    else if (low.startsWith('http://')) protoLen = 7;
+    else if (low.startsWith('ftp://')) protoLen = 6;
+    if (protoLen > 0) {
+      let j = i + protoLen;
+      while (j < n && src[j] !== ' ' && src[j] !== '\t' && src[j] !== '\n' && src[j] !== '<') j++;
+      let text = backpedal(src.slice(i, j));
+      if (text.length <= protoLen) return null;
+      return { end: i + text.length, href: text, text };
+    }
   }
   // bare email, at a word start
-  if (prevCh !== '' && /[A-Za-z0-9._+-]/.test(prevCh)) return null;
+  if (prevCh !== '' && isWordCh(prevCh)) return null;
   const em = tryEmail(src, i);
   if (!em) return null;
   // end -1: only a full match exists (the lookahead failed); the caller
@@ -785,7 +803,7 @@ function tryEmail(src, i) {
   const n = src.length;
   // cheap pre-check: a local part followed by '@' must be nearby
   let j = i;
-  while (j < n && j < i + 64 && /[A-Za-z0-9._+-]/.test(src[j])) j++;
+  while (j < n && j < i + 64 && isWordCh(src[j])) j++;
   if (j === i || j >= n || src[j] !== '@') return null;
   const slice = src.slice(i, i + 320);
   const full = EMAIL_FULL_RE.exec(slice);
@@ -816,15 +834,25 @@ function flanking(prev, next) {
 // refs is the document's link reference map. ctx carries inLink /
 // inRawBlock across nested scans; linkEmitted is set on ctx when a link
 // node is produced.
+// any inline-markup starter: link/code/emphasis/tag/escape/entity.
+// A run with none of these, no URL/email marker (a bare URL has no
+// markup starter of its own), and no hard-break run (two or more
+// spaces/tabs before a newline) is plain text — one text node, no scan.
+const HAS_INLINE = /[\[!`*_~<\\&]/;
+const HARD_BREAK_RUN = /[ \t]{2,}\n/;
 function scanInline(src, refs, ctx) {
   const n = src.length;
+  if (!HAS_INLINE.test(src) && src.indexOf('www.') < 0 && src.indexOf('://') < 0 && src.indexOf('mailto:') < 0 && src.indexOf('xmpp:') < 0 && src.indexOf('@') < 0 && !HARD_BREAK_RUN.test(src)) return [['t', src, ctx.inRawBlock]];
   const nodes = [];
   let buf = '';
   // marked's masked source for this inline run (only needed when an
   // emphasis delimiter is present); a delimiter run hidden by it —
   // inside a link, code span or tag as blockSkip sees it — is not a
-  // delimiter at all
-  const masked = (src.includes('*') || src.includes('_') || src.includes('~')) ? maskSrc(src, refs) : null;
+  // delimiter at all. It only changes anything when a backtick is
+  // present: links, tags and escapes are already isolated by the
+  // sub-contexts and escape handling, and only blockSkip's simple code
+  // regex can mis-pair backticks across a link label boundary.
+  const masked = (src.includes('`') && (src.includes('*') || src.includes('_') || src.includes('~'))) ? maskSrc(src, refs) : null;
   const flush = () => {
     if (buf !== '') {
       // the text was accumulated under the current raw-block state
@@ -894,6 +922,36 @@ function scanInline(src, refs, ctx) {
       continue;
     }
     if (c === '\n') { buf += '\n'; i++; continue; }
+    // fast path: bulk-append a run of plain text up to the next
+    // character that needs individual handling. Only mid-word: at a
+    // word start a URL/email may begin here and extend past a `_`
+    // delimiter (which ends the run), so the run's own markers cannot
+    // prove there is none. Safe mid-word because every URL/email start
+    // contains one of www. :// mailto: xmpp: @, and a URL/email never
+    // spans a special character, so a run free of those markers holds
+    // no link. (The run stops before any of `[!` + '`' + `*_~<\&\n \t`,
+    // so it never crosses a token boundary.)
+    {
+      const prev = i === 0 ? '' : src[i - 1];
+      let atWordStart = prev === '' || !isWordCh(prev);
+      if (!atWordStart && prev === '_') {
+        const lastNd = nodes.length > 0 ? nodes[nodes.length - 1] : null;
+        atWordStart = !!(lastNd && lastNd[0] === 'delim' && lastNd[1] === '_' && (lastNd[3] || lastNd[4]));
+      }
+      if (!atWordStart) {
+        NEXT_SPECIAL.lastIndex = i;
+        const sm = NEXT_SPECIAL.exec(src);
+        const nextIdx = sm ? sm.index : n;
+        if (nextIdx > i) {
+          const seg = src.slice(i, nextIdx);
+          if (seg.indexOf('www.') < 0 && seg.indexOf('://') < 0 && seg.indexOf('mailto:') < 0 && seg.indexOf('xmpp:') < 0 && seg.indexOf('@') < 0) {
+            buf += seg;
+            i = nextIdx;
+            continue;
+          }
+        }
+      }
+    }
     if (c === '\\') {
       if (i + 1 < n) {
         const d = src[i + 1];
@@ -1033,8 +1091,17 @@ function scanInline(src, refs, ctx) {
       i = j;
       continue;
     }
-    if (!ctx.inLink && (c === 'w' || c === 'm' || /[A-Za-z0-9]/.test(c))) {
+    if (!ctx.inLink && isAlphaNumCh(c)) {
       const prev = i === 0 ? '' : src[i - 1];
+      // fast path: a letter/digit in the middle of a word cannot start
+      // a URL/email (except a scheme, which starts with h/f), so it is
+      // plain text. A `_` delimiter node just emitted does break the
+      // word, so check that case only when the previous char is `_`.
+      if (prev !== '' && isWordCh(prev) && c !== 'h' && c !== 'H' && c !== 'f' && c !== 'F') {
+        if (prev !== '_') { buf += c; i++; continue; }
+        const lastNd = nodes.length > 0 ? nodes[nodes.length - 1] : null;
+        if (!(lastNd && lastNd[0] === 'delim' && lastNd[1] === '_' && (lastNd[3] || lastNd[4]))) { buf += c; i++; continue; }
+      }
       // a `_` that was just emitted as an emphasis delimiter is not part
       // of the word (it is a delimiter node, not text), so an email may
       // start right after an opener like `__`; treat it as a boundary
@@ -1043,8 +1110,11 @@ function scanInline(src, refs, ctx) {
       const lastNd = nodes.length > 0 ? nodes[nodes.length - 1] : null;
       const prevIsDelim = prev === '_' && lastNd && lastNd[0] === 'delim' && lastNd[1] === '_' && (lastNd[3] || lastNd[4]);
       const effPrev = prevIsDelim ? ' ' : prev;
-      const wordStart = effPrev === '' || !/[A-Za-z0-9._+-]/.test(effPrev);
-      if (wordStart || c === 'w') {
+      const wordStart = effPrev === '' || !isWordCh(effPrev);
+      // a scheme (http/https/ftp) matches even mid-word
+      // (`ahttp://x` links the http:// part); www./mailto:/xmpp:/email
+      // need a word start
+      if (wordStart || c === 'h' || c === 'H' || c === 'f' || c === 'F') {
         const u = tryUrl(src, i, effPrev);
         if (u) {
           // an email whose domain was backtracked (or only matched in
@@ -2425,51 +2495,59 @@ function processEmphasis(nodes) {
 // Rendering
 // ---------------------------------------------------------------------------
 
-function renderInline(nodes) {
-  let out = '';
+// renderInline appends the HTML for a node list into `out` (an array),
+// so nested spans do not build and re-concatenate intermediate strings
+function renderInline(nodes, out) {
   for (const nd of nodes) {
     const t = nd[0];
     if (t === 't') {
-      if (nd[2]) out += nd[1];
-      else if (nd[3]) out += escapeHtml(nd[1], false);
-      else out += escapeHtml(decodeNumeric(nd[1]), false);
+      if (nd[2]) out.push(nd[1]);
+      else if (nd[3]) out.push(escapeHtml(nd[1], false));
+      else out.push(escapeHtml(decodeNumeric(nd[1]), false));
     } else if (t === 'esc') {
-      out += escapeHtml(nd[1], false);
+      out.push(escapeHtml(nd[1], false));
     } else if (t === 'code') {
-      out += '<code>' + escapeHtml(nd[1], true) + '</code>';
+      out.push('<code>', escapeHtml(nd[1], true), '</code>');
     } else if (t === 'html') {
-      out += nd[1];
+      out.push(nd[1]);
     } else if (t === 'br') {
-      out += '<br>';
+      out.push('<br>');
     } else if (t === 'link') {
       const href = cleanUrl(nd[1]);
       if (href === null) {
-        out += renderInline(nd[3]);
+        renderInline(nd[3], out);
       } else {
-        out += '<a href="' + escapeHtml(href, false) + '"';
-        if (nd[2]) out += ' title="' + escapeHtml(nd[2], false) + '"';
-        out += '>' + renderInline(nd[3]) + '</a>';
+        out.push('<a href="', escapeHtml(href, false), '"');
+        if (nd[2]) out.push(' title="', escapeHtml(nd[2], false), '"');
+        out.push('>');
+        renderInline(nd[3], out);
+        out.push('</a>');
       }
     } else if (t === 'img') {
       const href = cleanUrl(nd[1]);
       if (href === null) {
-        out += escapeHtml(nd[4], false);
+        out.push(escapeHtml(nd[4], false));
       } else {
-        out += '<img src="' + escapeHtml(href, false) + '" alt="' + escapeHtml(nd[3], false) + '"';
-        if (nd[2]) out += ' title="' + escapeHtml(nd[2], false) + '"';
-        out += '>';
+        out.push('<img src="', escapeHtml(href, false), '" alt="', escapeHtml(nd[3], false), '"');
+        if (nd[2]) out.push(' title="', escapeHtml(nd[2], false), '"');
+        out.push('>');
       }
     } else if (t === 'delim') {
-      out += nd[1].repeat(nd[2]);
+      out.push(nd[1].repeat(nd[2]));
     } else if (t === 'em') {
-      out += '<em>' + renderInline(nd[1]) + '</em>';
+      out.push('<em>');
+      renderInline(nd[1], out);
+      out.push('</em>');
     } else if (t === 'strong') {
-      out += '<strong>' + renderInline(nd[1]) + '</strong>';
+      out.push('<strong>');
+      renderInline(nd[1], out);
+      out.push('</strong>');
     } else if (t === 'del') {
-      out += '<del>' + renderInline(nd[1]) + '</del>';
+      out.push('<del>');
+      renderInline(nd[1], out);
+      out.push('</del>');
     }
   }
-  return out;
 }
 
 function checkboxHtml(checked) {
@@ -2480,69 +2558,73 @@ function checkboxHtml(checked) {
 // unclosed `<a>` tag sets inLink and an unclosed <pre>/<script>/etc sets
 // inRawBlock, and both persist across blocks until a closing tag resets
 // them. One object per parse() call, shared by every top-level scanInline.
-function renderBlocks(blocks, tight, refs, doc) {
-  let out = '';
+function renderBlocks(blocks, tight, refs, doc, out) {
   for (const b of blocks) {
     if (b.t === 'p') {
-      const inner = renderInline(scanInline(b.text, refs, doc));
-      if (tight) {
-        out += (b.cb !== undefined ? checkboxHtml(b.cb) : '') + inner;
-      } else {
-        out += '<p>' + (b.cb !== undefined ? checkboxHtml(b.cb) : '') + inner + '</p>\n';
-      }
+      if (!tight) out.push('<p>');
+      if (b.cb !== undefined) out.push(checkboxHtml(b.cb));
+      renderInline(scanInline(b.text, refs, doc), out);
+      if (!tight) out.push('</p>\n');
     } else if (b.t === 'h') {
-      out += '<h' + b.level + '>' + renderInline(scanInline(b.text, refs, doc)) + '</h' + b.level + '>\n';
+      out.push('<h', b.level, '>');
+      renderInline(scanInline(b.text, refs, doc), out);
+      out.push('</h', b.level, '>\n');
     } else if (b.t === 'code') {
       const code = b.text ? b.text.replace(/\n$/, '') + '\n' : '';
-      out += '<pre><code';
-      if (b.lang) out += ' class="language-' + escapeHtml(b.lang, false) + '"';
-      out += '>' + escapeHtml(code, true) + '</code></pre>\n';
+      out.push('<pre><code');
+      if (b.lang) out.push(' class="language-', escapeHtml(b.lang, false), '"');
+      out.push('>', escapeHtml(code, true), '</code></pre>\n');
     } else if (b.t === 'hr') {
-      out += '<hr>\n';
+      out.push('<hr>\n');
     } else if (b.t === 'html') {
-      out += b.text;
+      out.push(b.text);
     } else if (b.t === 'bq') {
-      out += '<blockquote>\n' + renderBlocks(b.blocks, false, refs, doc) + '</blockquote>\n';
+      out.push('<blockquote>\n');
+      renderBlocks(b.blocks, false, refs, doc, out);
+      out.push('</blockquote>\n');
     } else if (b.t === 'ul' || b.t === 'ol') {
       const tag = b.t;
       const startAttr = (tag === 'ol' && b.start !== 1) ? ' start="' + b.start + '"' : '';
-      out += '<' + tag + startAttr + '>\n';
+      out.push('<', tag, startAttr, '>\n');
       for (const item of b.items) {
-        out += '<li>' + renderBlocks(item.blocks, !b.loose, refs, doc) + '</li>\n';
+        out.push('<li>');
+        renderBlocks(item.blocks, !b.loose, refs, doc, out);
+        out.push('</li>\n');
       }
-      out += '</' + tag + '>\n';
+      out.push('</', tag, '>\n');
     } else if (b.t === 'table') {
-      out += '<table>\n<thead>\n<tr>\n';
+      out.push('<table>\n<thead>\n<tr>\n');
       for (let k = 0; k < b.head.length; k++) {
-        out += b.align[k] ? '<th align="' + b.align[k] + '">' : '<th>';
-        out += renderInline(scanInline(b.head[k], refs, doc));
-        out += '</th>\n';
+        out.push(b.align[k] ? '<th align="' + b.align[k] + '">' : '<th>');
+        renderInline(scanInline(b.head[k], refs, doc), out);
+        out.push('</th>\n');
       }
-      out += '</tr>\n</thead>\n';
+      out.push('</tr>\n</thead>\n');
       if (b.body.length > 0) {
-        out += '<tbody>';
+        out.push('<tbody>');
         for (const row of b.body) {
-          out += '<tr>\n';
+          out.push('<tr>\n');
           for (let k = 0; k < row.length; k++) {
-            out += b.align[k] ? '<td align="' + b.align[k] + '">' : '<td>';
-            out += renderInline(scanInline(row[k], refs, doc));
-            out += '</td>\n';
+            out.push(b.align[k] ? '<td align="' + b.align[k] + '">' : '<td>');
+            renderInline(scanInline(row[k], refs, doc), out);
+            out.push('</td>\n');
           }
-          out += '</tr>\n';
+          out.push('</tr>\n');
         }
-        out += '</tbody>';
+        out.push('</tbody>');
       }
-      out += '</table>\n';
+      out.push('</table>\n');
     }
   }
-  return out;
 }
 
 export function parse(markdown) {
-  const src = markdown.replace(/\r\n?/g, '\n');
+  const src = markdown.indexOf('\r') < 0 ? markdown : markdown.replace(/\r\n?/g, '\n');
   const lines = src.split('\n');
   const refs = new Map();
   const blocks = parseBlocks(lines, true, refs);
   const doc = { inLink: false, inRawBlock: false, linkEmitted: false };
-  return renderBlocks(blocks, false, refs, doc);
+  const out = [];
+  renderBlocks(blocks, false, refs, doc, out);
+  return out.join('');
 }
