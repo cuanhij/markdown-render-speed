@@ -1,29 +1,29 @@
 # markdown-render-speed
 
-A small, dependency-free Markdown parser built to be fast. Its HTML
-output matches marked 18.1.3 byte for byte when marked runs with its
-default settings: GFM on, hard breaks off, pedantic off, synchronous.
+A fast Markdown parser with zero dependencies. It converts Markdown to
+HTML that is byte-identical to what marked 18.1.3 produces with its
+default options (GFM enabled, breaks disabled, pedantic off, sync mode).
 
-## Usage
+## How to use it
 
 ```js
 import { parse } from './parse.js';
 
-const html = parse('# Hello\n\nSome *emphasised* text.');
+parse('# Hello\n\nSome *emphasised* text.');
 // '<h1>Hello</h1>\n<p>Some <em>emphasised</em> text.</p>\n'
 ```
 
-`parse(markdown)` takes one Markdown document and returns the HTML
-string for it. It implements CommonMark 0.31.2 plus the GFM extras —
-tables, task lists, strikethrough, extended autolinks, and disallowed
-raw HTML handling.
+`parse(markdown)` takes a single Markdown document and returns its HTML.
+It handles CommonMark 0.31.2 plus the GFM additions: tables, task list
+items, strikethrough, extended autolinks, and disallowed raw HTML.
 
-## Layout
+## What is in this repo
 
-- `parse.js` — the parser itself, a single dependency-free ES module.
-- `main.ts` — the scoring-harness driver: reads `/input/cases.json`
-  and writes the rendered HTML strings to `/output/html.json`.
+- `parse.js` — the parser, one self-contained ES module.
+- `main.ts` — the driver the scoring harness runs: it reads the cases
+  from `/input/cases.json` and writes all rendered HTML to
+  `/output/html.json`.
 
 ## License
 
-MIT. The full text is in `LICENSE`.
+MIT — the full license text is in `LICENSE`.
