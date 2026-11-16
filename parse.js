@@ -414,10 +414,11 @@ function buildBlocks(root, rawLines, refs) {
     if (lineBlank(line)) {
       // An HTML block of types 1-5 followed by a blank line loses its
       // trailing newline (but a blank line inside a still-open HTML block
-      // is part of the block, not after it). A line containing only a
-      // tab does not count: marked keeps the trailing newline after it.
+      // is part of the block, not after it). Only a truly empty line
+      // counts: a blank line containing only spaces or tabs does not
+      // strip the newline (marked keeps it after those).
       if (lastAdded && lastAdded.t === 'html' && lastAdded.htmlType <= 5 &&
-          stack.indexOf(lastAdded) < 0 && line.s.indexOf('\t') < 0) {
+          stack.indexOf(lastAdded) < 0 && line.s === '') {
         lastAdded.blankAfter = true;
       }
       // A blank line must carry a block quote marker to stay inside a
