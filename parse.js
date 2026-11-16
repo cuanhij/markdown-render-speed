@@ -736,7 +736,9 @@ function matchHtmlTag(s, i) {
   const c = s[j];
   if (c === '!') {
     if (s.startsWith('<!--', i)) {
-      const k = s.indexOf('-->', i + 4);
+      // The closing "-->" may overlap the opening ("<!-->" is an empty
+      // comment), so search from i+2, not i+4.
+      const k = s.indexOf('-->', i + 2);
       return k < 0 ? null : { end: k + 3, name: '', closing: false };
     }
     if (s.startsWith('<![CDATA[', i)) {
@@ -778,8 +780,12 @@ function matchHtmlTag(s, i) {
     // An attribute must be preceded by whitespace; otherwise this is not
     // a tag at all (e.g. "<MAILTO:FOO@BAR.BAZ>" is an autolink).
     if (k === beforeWs) return null;
+    // An attribute name starts with a letter, "_" or ":" and continues
+    // with letters, digits, "_", ".", ":" or "-".
+    if (!/[a-zA-Z_:]/.test(s[k])) return null;
     const aStart = k;
-    while (k < s.length && s[k] !== ' ' && s[k] !== '\t' && s[k] !== '\n' && s[k] !== '=' && s[k] !== '/' && s[k] !== '>') k++;
+    k++;
+    while (k < s.length && /[a-zA-Z0-9_.:-]/.test(s[k])) k++;
     if (k === aStart) return null;
     while (k < s.length && (s[k] === ' ' || s[k] === '\t' || s[k] === '\n')) k++;
     if (s[k] === '=') {
@@ -1539,6 +1545,9 @@ function scanInline(st, s) {
           flushText(i);
           listAppend(topList, { t: 'br' });
           i += 2; textStart = i;
+          // Leading spaces on the line after a hard break are stripped.
+          while (i < n && (s[i] === ' ' || s[i] === '\t')) i++;
+          textStart = i;
           continue;
         }
         if (isPunctCode(nc.charCodeAt(0))) {
@@ -1559,6 +1568,9 @@ function scanInline(st, s) {
         flushText(i - spaces);
         listAppend(topList, { t: 'br' });
         i++; textStart = i;
+        // Leading spaces on the line after a hard break are stripped.
+        while (i < n && (s[i] === ' ' || s[i] === '\t')) i++;
+        textStart = i;
         continue;
       }
       i++;
