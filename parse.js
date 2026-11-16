@@ -2424,6 +2424,43 @@ function wrapEmphasis(st, opener, closer, useDelims, type) {
   syncListOwner(L);
   delimRemove(st, opener);
   delimRemove(st, closer);
+  // A leftover closer after a <strong> whose content holds an <em>
+  // moves inside the strong only when no earlier opener in the same
+  // list could pair with it (doc-11, doc-30). When such an opener
+  // exists the leftover stays outside and forms the outer emphasis
+  // (doc-05 "__", doc-31 "*"); a strong without an em also keeps it
+  // outside ("**foo***" renders "<strong>foo</strong>*", cm-446).
+  if (type === 'strong' && closerRem) {
+    let hasEm = false;
+    let nd = childList.head;
+    while (nd) { if (nd.t === 'em') { hasEm = true; break; } nd = nd.next; }
+    let pairable = false;
+    if (hasEm) {
+      let op = closerRem.pd;
+      while (op) {
+        if (op.t === 'delim' && op.ch === closerRem.ch && op.canOpen && op.pid === L.pid) {
+          const oddMatch = (op.canOpen && op.canClose) || (closerRem.canOpen && closerRem.canClose);
+          let ok = true;
+          if (oddMatch) {
+            const sum = op.n + closerRem.n;
+            if (sum % 3 === 0 && !(op.n % 3 === 0 && closerRem.n % 3 === 0)) ok = false;
+          }
+          if (ok) { pairable = true; break; }
+        }
+        op = op.pd;
+      }
+    }
+    if (hasEm && !pairable) {
+      listRemove(L, closerRem);
+      closerRem.prev = childList.tail;
+      closerRem.next = null;
+      if (childList.tail) childList.tail.next = closerRem; else childList.head = closerRem;
+      childList.tail = closerRem;
+      closerRem.pid = childList.pid;
+      syncListOwner(childList);
+      syncListOwner(L);
+    }
+  }
   return closerRem;
 }
 
