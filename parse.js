@@ -241,7 +241,10 @@ function parseListMarker(line) {
   const inf = indentInfo(line);
   if (inf.cols > 3) return null;
   const s = line.s;
-  const startCol = line.col + inf.cols;
+  // startCol is relative to the line's current position (after the outer
+  // containers were consumed), so it stays valid across lines whose
+  // container markers are spelled differently ("> " vs ">>").
+  const startCol = inf.cols;
   let i = inf.off;
   let type;
   let bulletChar = '';
@@ -275,6 +278,13 @@ function parseListMarker(line) {
     if (s[k] === ' ') { col++; k++; ws++; }
     else { const w = 4 - (col % 4); col += w; k++; ws += w; }
   }
+  // If nothing but whitespace follows the marker, the item is empty and
+  // its content indent is just marker + 1 (the trailing spaces do not
+  // count).
+  if (k >= s.length) {
+    return { type, bulletChar, delim, start: startNum, markerIndent: startCol,
+      contentIndent: startCol + width + 1, afterMarker: i, empty: true, width };
+  }
   const contentIndent = ws >= 5 ? startCol + width + 1 : startCol + width + ws;
   return { type, bulletChar, delim, start: startNum, markerIndent: startCol,
     contentIndent, afterMarker: i, empty: false, width };
@@ -285,12 +295,12 @@ function parseListMarker(line) {
 // line starts a new item of the same list, 0 when it does not match.
 function matchItem(line, item, list) {
   const inf = indentInfo(line);
-  if (line.col + inf.cols >= item.contentIndent) {
-    advanceCols(line, item.contentIndent - line.col);
+  if (inf.cols >= item.contentIndent) {
+    advanceCols(line, item.contentIndent);
     return 1;
   }
   // Not enough indent: could this be a new item of the same list?
-  if (line.col + inf.cols === list.markerIndent) {
+  if (inf.cols === list.markerIndent) {
     const m = parseListMarker(line);
     if (m && m.type === list.listType &&
         (list.listType === 'bullet' ? m.bulletChar === list.bulletChar : m.delim === list.delim)) {
@@ -377,8 +387,20 @@ function buildBlocks(root, rawLines, refs) {
       if (b.t === 'quote') {
         if (!matchQuoteMarker(line)) { failIdx = i; break; }
       } else {
+        const saveOff = line.off;
+        const saveCol = line.col;
         const r = matchItem(line, b, stack[i - 1]);
-        if (r === 1) continue;
+        if (r === 1) {
+          // An empty item cannot gain paragraph content after a blank
+          // line (it can still gain a nested list).
+          if (b.children.length === 0 && pendingBlank && pendingBlank.item === b &&
+              !parseListMarker(line)) {
+            line.off = saveOff;
+            line.col = saveCol;
+            failIdx = i; break;
+          }
+          continue;
+        }
         if (r === 2) { failIdx = i; newItem = true; break; }
         failIdx = i; break;
       }
@@ -389,17 +411,48 @@ function buildBlocks(root, rawLines, refs) {
       } else if (tip().t === 'para') {
         // Lazy continuation line: the paragraph keeps the line, unless the
         // line starts a block that can interrupt a paragraph (a thematic
-        // break, ATX heading or fenced code block), which closes the
-        // paragraph and its containers instead.
-        if (isThematicBreak(line) || tryAtx(line) || tryFence(line)) {
+        // break, ATX heading, fenced code block, list item, block quote or
+        // HTML block), which closes the paragraph and its containers
+        // instead. A line whose remainder is blank is a blank line inside
+        // the containers that did match: it closes the paragraph.
+        const hb = tryHtmlBlock(line);
+        if (/^[ \t]*$/.test(restOf(line))) {
+          // A blank line inside the containers that did match only closes
+          // the paragraph; the containers stay open (the list becomes
+          // loose) so later content can re-enter them.
+          closeTo(stack.length - 1);
+          for (let i = stack.length - 1; i >= 1; i--) {
+            if (stack[i].t === 'item') { pendingBlank = { item: stack[i], list: stack[i - 1] }; break; }
+          }
+        } else if (isThematicBreak(line) || tryAtx(line) || tryFence(line) ||
+            parseListMarker(line) || isQuoteStart(line) ||
+            (hb && hb.type !== 7)) {
           closeTo(failIdx);
         } else {
           const p = tip();
           // A lazy continuation line that looks like a setext underline is
           // kept as paragraph text, with four spaces prepended so it can
           // no longer be read as an underline.
-          if (setextLevel(line)) p.lines.push('    ' + restOf(line));
-          else p.lines.push(restOf(line));
+          // Its leading spaces are stripped up to the virtual indent of
+          // the containers that failed to match (2 per block quote) plus
+          // the 3 spaces a paragraph continuation may carry.
+          let content = restOf(line);
+          // The strip allowance is the virtual indent of the containers
+          // that failed to match (2 per block quote, or a list item's
+          // content indent) plus the 3 spaces a paragraph continuation
+          // may carry.
+          let strip = 3;
+          let itemIndent = -1;
+          for (let k = failIdx; k < stack.length; k++) {
+            if (stack[k].t === 'quote') strip += 2;
+            else if (stack[k].t === 'item') itemIndent = stack[k].contentIndent;
+          }
+          if (itemIndent >= 0) strip = itemIndent + 3;
+          let si = 0;
+          while (si < content.length && si < strip && content[si] === ' ') si++;
+          content = content.slice(si);
+          if (setextLevel(line)) content = '    ' + content;
+          p.lines.push(content);
           p.lineCount++;
           pendingBlank = null;
           continue;
@@ -460,18 +513,48 @@ function buildBlocks(root, rawLines, refs) {
       t = tip();
     }
 
+    // ---- blank remainder after container markers ----
+    // A line whose content after the container markers is empty (e.g. ">")
+    // is a blank line inside those containers: it closes a paragraph but
+    // does not start one. A line whose remainder is only whitespace (e.g.
+    // ">  ", remainder " ") is a continuation of an existing paragraph
+    // (it does not start a new paragraph, and it does not close one).
+    {
+      const rest = restOf(line);
+      if (rest === '') {
+        if (tip().t === 'para') closeTo(stack.length - 1);
+        for (let i = stack.length - 1; i >= 1; i--) {
+          if (stack[i].t === 'item') { pendingBlank = { item: stack[i], list: stack[i - 1] }; break; }
+        }
+        continue;
+      }
+      if (/^[ \t]+$/.test(rest)) {
+        if (tip().t === 'para') {
+          const p = tip();
+          p.lines.push(rest);
+          p.lineCount++;
+        }
+        pendingBlank = null;
+        continue;
+      }
+    }
+
     // ---- setext heading underline ----
     if (tip().t === 'para') {
       const lvl = setextLevel(line);
       if (lvl) {
         const para = tip();
         stripDefsFromPara(para, refs);
-        const h = { t: 'heading', level: lvl, text: para.lines.join('\n').trim() };
-        const parent = stack[stack.length - 2];
-        parent.children[parent.children.length - 1] = h;
-        stack.pop();
-        pendingBlank = null;
-        continue;
+        // If the paragraph was only definitions, it is empty: the line is
+        // not an underline, it is paragraph text (fall through).
+        if (para.lineCount > 0) {
+          const h = { t: 'heading', level: lvl, text: para.lines.join('\n').trim() };
+          const parent = stack[stack.length - 2];
+          parent.children[parent.children.length - 1] = h;
+          stack.pop();
+          pendingBlank = null;
+          continue;
+        }
       }
     }
 
@@ -902,7 +985,7 @@ function tryParseDef(text, pos, refs) {
   let dest;
   if (text[j] === '<') {
     const d = scanAngleDest(text, j);
-    if (!d || d.dest === '') return -1;
+    if (!d) return -1;
     dest = d.dest;
     j = d.end;
   } else {
@@ -916,6 +999,8 @@ function tryParseDef(text, pos, refs) {
   let title = null;
   const qc = text[j];
   if (qc === '"' || qc === "'" || qc === '(') {
+    // A title must be separated from the destination by whitespace.
+    if (j === saveJ) return -1;
     const t = scanTitle(text, j);
     if (!t) return -1;
     title = t.title;
@@ -924,7 +1009,18 @@ function tryParseDef(text, pos, refs) {
     j = saveJ;
   }
   while (j < text.length && (text[j] === ' ' || text[j] === '\t')) j++;
-  if (j < text.length && text[j] !== '\n') return -1;
+  if (j < text.length && text[j] !== '\n') {
+    // Junk after the title: the title is not part of the definition, but
+    // the definition itself (destination only) still stands.
+    if (title !== null) {
+      title = null;
+      j = saveJ;
+      while (j < text.length && (text[j] === ' ' || text[j] === '\t')) j++;
+      if (j < text.length && text[j] !== '\n') return -1;
+    } else {
+      return -1;
+    }
+  }
   const norm = normalizeLabel(rawLabel);
   if (!refs.has(norm)) refs.set(norm, { dest, title });
   return j;
@@ -967,10 +1063,12 @@ function tryStartBlock(line, stack, addBlock, refs, pendingBlank) {
     stack.push(node);
     return true;
   }
-  // HTML blocks cannot interrupt a paragraph.
-  if (tipNode.t !== 'para') {
+  // HTML blocks of types 1-6 can interrupt a paragraph; only type 7
+  // cannot.
+  {
     const hb = tryHtmlBlock(line);
-    if (hb) {
+    if (hb && (hb.type !== 7 || tipNode.t !== 'para')) {
+      closeParaTip(stack, refs);
       const node = { t: 'html', lines: [restOf(line)], htmlType: hb.type, endStr: hb.endStr };
       addBlock(node);
       if (!(hb.type <= 5 && htmlEndsHere(line, node))) stack.push(node);
@@ -1013,13 +1111,16 @@ function tryStartBlock(line, stack, addBlock, refs, pendingBlank) {
     startParagraph(line, stack, addBlock);
     return true;
   }
-  // GFM table: a delimiter row after a paragraph line.
+  // GFM table: a delimiter row after a paragraph line. Check the delimiter
+  // row FIRST: stripping definitions before knowing the line is a delimiter
+  // row would parse an incomplete definition (its title may be the very
+  // line being processed) and store it without its title.
   if (tipNode.t === 'para') {
     const p = tipNode;
-    stripDefsFromPara(p, refs);
-    if (p.lineCount >= 1) {
-      const aligns = parseDelimiterRow(line);
-      if (aligns) {
+    const aligns = parseDelimiterRow(line);
+    if (aligns) {
+      stripDefsFromPara(p, refs);
+      if (p.lineCount >= 1) {
         const lastLine = p.lines[p.lines.length - 1];
         const headerCells = splitTableRow(lastLine);
         if (headerCells.length === aligns.length) {
@@ -1283,7 +1384,7 @@ function tryInlineLink(s, i) {
   let dest;
   if (s[j] === '<') {
     const d = scanAngleDest(s, j);
-    if (!d || d.dest === '') return null;
+    if (!d) return null;
     dest = d.dest;
     j = d.end;
   } else {
@@ -1297,6 +1398,8 @@ function tryInlineLink(s, i) {
   let title = null;
   const qc = s[j];
   if (qc === '"' || qc === "'" || qc === '(') {
+    // A title must be separated from the destination by whitespace.
+    if (j === saveJ) return null;
     const t = scanTitle(s, j);
     if (!t) return null;
     title = t.title;
@@ -1778,22 +1881,24 @@ function renderTable(b, refs) {
   return out;
 }
 
-function renderList(b, refs) {
+function renderList(b, refs, isLast) {
   const tag = b.listType === 'bullet' ? 'ul' : 'ol';
   let out = '<' + tag;
   if (b.listType === 'ordered' && b.start !== 1) out += ' start="' + b.start + '"';
   out += '>\n';
-  for (const item of b.children) {
+  for (let j = 0; j < b.children.length; j++) {
+    const item = b.children[j];
+    const itemIsLast = isLast && j === b.children.length - 1;
     if (b.tight) {
       out += '<li>';
       const kids = item.children;
       for (let i = 0; i < kids.length; i++) {
-        out += renderBlock(kids[i], refs, true, i === kids.length - 1);
+        out += renderBlock(kids[i], refs, true, itemIsLast && i === kids.length - 1);
       }
       out += '</li>\n';
     } else {
       out += '<li>';
-      out += renderBlocks(item.children, refs, false);
+      out += renderBlocks(item.children, refs, false, itemIsLast);
       out += '</li>\n';
     }
   }
@@ -1823,24 +1928,26 @@ function renderBlock(b, refs, tight, isLast) {
     return '<pre><code>' + escapeHtml(content) + '</code></pre>\n';
   }
   if (b.t === 'html') {
-    // HTML blocks of types 1-5 end at a closing marker and always keep a
-    // trailing newline; types 6-7 end at a blank line and keep one only
-    // when they are the last block in their parent.
+    // Types 1-5 (pre/script/style/textarea, comment, PI, declaration,
+    // CDATA) always keep a trailing newline; types 6-7 keep one only when
+    // the block is the last block in the document.
     const hasTrailing = b.htmlType <= 5 || isLast;
     return b.lines.length ? b.lines.join('\n') + (hasTrailing ? '\n' : '') : '';
   }
   if (b.t === 'quote') {
-    return '<blockquote>\n' + renderBlocks(b.children, refs, false) + '</blockquote>\n';
+    return '<blockquote>\n' + renderBlocks(b.children, refs, false, isLast) + '</blockquote>\n';
   }
-  if (b.t === 'list') return renderList(b, refs);
+  if (b.t === 'list') return renderList(b, refs, isLast);
   if (b.t === 'table') return renderTable(b, refs);
-  if (b.t === 'item') return renderBlocks(b.children, refs, tight);
+  if (b.t === 'item') return renderBlocks(b.children, refs, tight, isLast);
   return '';
 }
 
-function renderBlocks(blocks, refs, tight) {
+function renderBlocks(blocks, refs, tight, parentIsLast) {
   let out = '';
-  for (let i = 0; i < blocks.length; i++) out += renderBlock(blocks[i], refs, tight, i === blocks.length - 1);
+  for (let i = 0; i < blocks.length; i++) {
+    out += renderBlock(blocks[i], refs, tight, parentIsLast && i === blocks.length - 1);
+  }
   return out;
 }
 
@@ -1853,5 +1960,5 @@ export function parse(input) {
   const refs = new Map();
   const root = { t: 'root', children: [] };
   buildBlocks(root, lines, refs);
-  return renderBlocks(root.children, refs, false);
+  return renderBlocks(root.children, refs, false, true);
 }
