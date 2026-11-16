@@ -1523,13 +1523,15 @@ function trimUrlEnd(url) {
     if (end === 0) break;
     const last = url[end - 1];
     if (last === ')') {
-      let open = 0;
-      let close = 0;
+      // A trailing ")" is kept only when it closes an unmatched "("
+      // earlier in the URL. Track depth in order (clamped at 0): a ")"
+      // that precedes its "(" does not balance it.
+      let depth = 0;
       for (let k = 0; k < end - 1; k++) {
-        if (url[k] === '(') open++;
-        else if (url[k] === ')') close++;
+        if (url[k] === '(') depth++;
+        else if (url[k] === ')' && depth > 0) depth--;
       }
-      if (open > close) break;
+      if (depth > 0) break;
       end--;
       continue;
     }
