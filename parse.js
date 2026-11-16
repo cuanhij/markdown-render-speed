@@ -1542,10 +1542,21 @@ function tryBareEmail(s, i, textStart) {
   if (domEnd < s.length) {
     const after = s[domEnd];
     // A "_" that is part of a "__" emphasis run does not continue the
-    // address; a lone "_" does.
+    // address; a lone "_" does, unless it closes an emphasis run and
+    // more text follows on the same line (then it is the closer, not
+    // part of the address).
     if (after === '_' && s[domEnd + 1] === '_') {
       // fall through: the "__" closes emphasis, the email is complete
-    } else if (isAlnumCode(after.charCodeAt(0)) || after === '-' || after === '_' || after === '+') return null;
+    } else if (after === '_') {
+      const nx = s[domEnd + 1];
+      if (nx === undefined || nx === '\n') return null;
+      if (nx === ' ' || nx === '\t') {
+        let k = domEnd + 1;
+        while (k < s.length && (s[k] === ' ' || s[k] === '\t')) k++;
+        if (k >= s.length || s[k] === '\n') return null;
+        // more text follows on this line: the "_" closes emphasis
+      } else return null;
+    } else if (isAlnumCode(after.charCodeAt(0)) || after === '-' || after === '+') return null;
   }
   // A scheme immediately before the address ("mailto:foo@bar.baz") is
   // part of the link.
