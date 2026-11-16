@@ -1,1 +1,1 @@
-{"description":"Fast dependency-free Markdown parser producing output identical to marked 18.1.3","license":"MIT","main":"parse.js","name":"markdown-render-speed","type":"module","version":"1.0.0"}
+{"description":"Dependency-free Markdown parser whose HTML matches marked 18.1.3 byte for byte","license":"MIT","main":"parse.js","name":"markdown-render-speed","type":"module","version":"1.0.0"}
