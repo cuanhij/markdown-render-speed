@@ -1,1 +1,1 @@
-{"description":"Dependency-free Markdown to HTML renderer, byte-identical to marked 18.1.3 with default settings, tuned for speed","license":"MIT","main":"parse.js","name":"markdown-render-speed","type":"module","version":"1.0.0"}
+{"description":"Fast, dependency-free Markdown renderer whose HTML matches marked 18.1.3 defaults byte for byte","license":"MIT","main":"parse.js","name":"markdown-render-speed","type":"module","version":"1.0.0"}
