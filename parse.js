@@ -1579,6 +1579,16 @@ function tryBareUrl(s, i) {
     if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '<') break;
     k++;
   }
+  // An unmatched "(" ends the URL: a "(" must be closed by a ")" later
+  // in the candidate, otherwise the URL stops before it.
+  {
+    const stack = [];
+    for (let p = domEnd; p < k; p++) {
+      if (s[p] === '(') stack.push(p);
+      else if (s[p] === ')' && stack.length > 0) stack.pop();
+    }
+    if (stack.length > 0) k = stack[0];
+  }
   let url = trimUrlEnd(s.slice(i, k));
   if (url === '') return null;
   const href = cleanUrl(scheme + decodeEntities(url));
