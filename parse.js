@@ -190,6 +190,13 @@ function expandFenceTab(s, col) {
   return ' '.repeat(4 - (col % 4)) + s.slice(1);
 }
 
+// Column to expand a fenced-code content tab from: when the line went
+// through a block quote marker, the tab is measured from that marker
+// (the innermost one), not from the start of the line.
+function fenceTabCol(line) {
+  return line.quoteCol >= 0 ? line.col - line.quoteCol : line.col;
+}
+
 function lineBlank(line) {
   for (let i = line.off; i < line.s.length; i++) {
     const ch = line.s[i];
@@ -276,6 +283,10 @@ function matchQuoteMarker(line) {
   const inf = indentInfo(line);
   if (inf.cols > 3) return false;
   if (line.s[inf.off] !== '>') return false;
+  // Remember the column of this '>' (the innermost one wins, as the
+  // markers are matched outside in): a tab in fenced-code content is
+  // expanded from the column measured from the '>' marker.
+  line.quoteCol = line.col + inf.cols;
   line.off = inf.off + 1;
   line.col = line.col + inf.cols + 1;
   if (line.s[line.off] === ' ') { line.off++; line.col++; }
@@ -397,7 +408,7 @@ function buildBlocks(root, rawLines, refs) {
   }
 
   for (const raw of rawLines) {
-    const line = { s: raw, off: 0, col: 0 };
+    const line = { s: raw, off: 0, col: 0, quoteCol: -1 };
 
     // ---- blank line ----
     if (lineBlank(line)) {
@@ -421,7 +432,7 @@ function buildBlocks(root, rawLines, refs) {
         // A blank line inside a fence keeps its spaces past the fence
         // indent (e.g. "  " stays "  " when the fence indent is 0).
         advanceCols(line, t.fenceIndent);
-        t.lines.push(expandFenceTab(restOf(line), line.col));
+        t.lines.push(expandFenceTab(restOf(line), fenceTabCol(line)));
         continue;
       }
       if (t.t === 'code') {
@@ -555,6 +566,9 @@ function buildBlocks(root, rawLines, refs) {
           let si = 0;
           while (si < content.length && si < strip && content[si] === ' ') si++;
           content = content.slice(si);
+          // A leading tab is expanded to spaces from the column it sits
+          // at (after the stripped spaces), like a normal paragraph line.
+          content = expandTabs(content, line.col + si);
           if (setextLevel(line)) content = '    ' + content;
           p.lines.push(content);
           p.lineCount++;
@@ -588,7 +602,7 @@ function buildBlocks(root, rawLines, refs) {
         closeTo(stack.length - 1);
       } else {
         advanceCols(line, t.fenceIndent);
-        t.lines.push(expandFenceTab(restOf(line), line.col));
+        t.lines.push(expandFenceTab(restOf(line), fenceTabCol(line)));
       }
       pendingBlank = null;
       continue;
