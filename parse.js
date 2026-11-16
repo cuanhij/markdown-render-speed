@@ -182,6 +182,14 @@ function expandTabs(s, startCol) {
   return out + s.slice(i);
 }
 
+// Expand a leading tab of a fenced-code content line to spaces, based on
+// the column at which the content starts. A tab at column 0 (no indent
+// was stripped) is kept as a tab.
+function expandFenceTab(s, col) {
+  if (col <= 0 || s.charCodeAt(0) !== 9) return s;
+  return ' '.repeat(4 - (col % 4)) + s.slice(1);
+}
+
 function lineBlank(line) {
   for (let i = line.off; i < line.s.length; i++) {
     const ch = line.s[i];
@@ -413,7 +421,7 @@ function buildBlocks(root, rawLines, refs) {
         // A blank line inside a fence keeps its spaces past the fence
         // indent (e.g. "  " stays "  " when the fence indent is 0).
         advanceCols(line, t.fenceIndent);
-        t.lines.push(restOf(line));
+        t.lines.push(expandFenceTab(restOf(line), line.col));
         continue;
       }
       if (t.t === 'code') {
@@ -568,7 +576,7 @@ function buildBlocks(root, rawLines, refs) {
         closeTo(stack.length - 1);
       } else {
         advanceCols(line, t.fenceIndent);
-        t.lines.push(restOf(line));
+        t.lines.push(expandFenceTab(restOf(line), line.col));
       }
       pendingBlank = null;
       continue;
@@ -1342,6 +1350,18 @@ function delimRemove(st, node) {
   node.pd = null; node.nd = null;
 }
 
+// True when an active bracket opener is on the delimiter stack: a bare
+// URL, bare email or angle autolink inside it would be inside a link (or
+// an image label), so it must stay plain text.
+function hasActiveBracket(st) {
+  let b = st.dTail;
+  while (b) {
+    if (b.t === 'bracket' && b.active) return true;
+    b = b.pd;
+  }
+  return false;
+}
+
 // Plain text of a node list (for image alt text).
 function plainText(head) {
   let out = '';
@@ -1443,7 +1463,7 @@ function tryBareUrl(s, i) {
   let scheme = '';
   let j = i;
   const lower = s.slice(i, i + 8).toLowerCase();
-  if (lower.startsWith('www.')) {
+  if (s.startsWith('www.', i)) {
     scheme = 'http://';
     j = i + 4;
   } else if (lower.startsWith('https://')) {
@@ -1821,9 +1841,9 @@ function scanInline(st, s) {
       i++;
       continue;
     }
-    if ((ch === 'w' || ch === 'W') && s.slice(i, i + 4).toLowerCase() === 'www.') {
+    if (ch === 'w' && s.startsWith('www.', i)) {
       const prev = i > 0 ? s[i - 1] : ' ';
-      if (isWsChar(prev) || prev === '*' || prev === '_' || prev === '~' || prev === '(' || prev === '[' || prev === '<') {
+      if (!hasActiveBracket(st) && (isWsChar(prev) || prev === '*' || prev === '_' || prev === '~' || prev === '(' || prev === '[' || prev === '<')) {
         const u = tryBareUrl(s, i);
         if (u) {
           flushText(i);
@@ -1839,7 +1859,7 @@ function scanInline(st, s) {
     }
     if ((ch === 'h' || ch === 'H') && (s.slice(i, i + 7).toLowerCase() === 'http://' || s.slice(i, i + 8).toLowerCase() === 'https://')) {
       const prev = i > 0 ? s[i - 1] : ' ';
-      if (isWsChar(prev) || prev === '*' || prev === '_' || prev === '~' || prev === '(' || prev === '[' || prev === '<') {
+      if (!hasActiveBracket(st) && (isWsChar(prev) || prev === '*' || prev === '_' || prev === '~' || prev === '(' || prev === '[' || prev === '<')) {
         const u = tryBareUrl(s, i);
         if (u) {
           flushText(i);
@@ -1854,7 +1874,7 @@ function scanInline(st, s) {
       continue;
     }
     if (ch === '@') {
-      const em = tryBareEmail(s, i, textStart);
+      const em = !hasActiveBracket(st) ? tryBareEmail(s, i, textStart) : null;
       if (em) {
         flushText(em.localStart);
         const childList = mkList(st.nextPid++);
