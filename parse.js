@@ -585,27 +585,24 @@ function buildBlocks(root, rawLines, refs) {
             if (stack[k].t === 'item') hasItem = true;
           }
           if (hasQuote && hasItem) {
-            // Spaces after a quote marker are paragraph content (kept)
-            // unless the line's text starts at or past the list item's
-            // absolute content indent: then the spaces up to that
-            // indent are container indentation, not content. The quote
-            // may have consumed a different number of spaces on the
-            // item's first line than on this line (">" vs "> "), so
-            // the comparison must use absolute columns, not the
-            // relative content indent (doc-22: ">     Same" strips to
-            // "Same" while ">    Naïve" keeps its spaces).
+            // A lazy continuation line in a quote+item keeps its
+            // leading spaces when there are 3 or fewer, but a line
+            // with 4+ leading spaces has them all stripped (marked
+            // treats it as a continuation at the item's indent).
+            // (doc-22: ">    Naïve" (3 spaces) keeps them while
+            // ">     Same" (4 spaces) strips to "Same"; doc-26/doc-29
+            // keep 1-2 spaces.)
             strip = 0;
-            const failed = stack[failIdx];
-            if (failed && failed.t === 'item' && failed.markerWidth !== undefined) {
-              // A lazy line indented at least to the marker plus one
-              // space is a continuation whose indent is stripped by
-              // that amount; a less-indented line is kept verbatim.
-              // (doc-22: ">    Naïve" (3 spaces < 4) keeps its spaces
-              // while ">     Same" (4 spaces) strips to "Same".)
-              const need = failed.markerIndent + failed.markerWidth + 1;
+            {
+              // A lazy line with 4+ leading spaces has them stripped
+              // (marked treats the line as a continuation at the
+              // item's indent); with 3 or fewer the spaces are
+              // paragraph content and are kept. (doc-22: ">    Naïve"
+              // (3 spaces) keeps them while ">     Same" (4 spaces)
+              // strips to "Same"; doc-26/doc-29 keep 1-2 spaces.)
               let k = 0;
               while (k < content.length && content[k] === ' ') k++;
-              if (k >= need) strip = need;
+              if (k >= 4) strip = k;
             }
           } else {
             for (let k = failIdx; k < stack.length; k++) {
@@ -1447,7 +1444,7 @@ function tryStartBlock(line, stack, addBlock, refs, pendingBlank) {
       addBlock(list);
       stack.push(list);
     }
-    const item = { t: 'item', children: [], contentIndent: m.contentIndent, markerIndent: m.markerIndent, markerWidth: m.width };
+    const item = { t: 'item', children: [], contentIndent: m.contentIndent, markerIndent: m.markerIndent };
     addBlock(item);
     stack.push(item);
     if (m.empty || lineBlank(line)) return true;
