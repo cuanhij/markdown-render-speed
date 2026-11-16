@@ -1515,10 +1515,12 @@ function isEmailLocalChar(ch) {
 // Try a bare email address with the '@' at s[i]. textStart is the start of
 // the current unflushed text run. Returns { end, href, text, localStart }.
 function tryBareEmail(s, i, textStart) {
-  // Local part: maximal run of local-part chars ending at i, within the
-  // current text run.
+  // Local part: maximal run of local-part chars ending at i. The scan is
+  // not limited to the current text run: an emphasis delimiter such as
+  // "_" is a valid local-part character (e.g. "a.b-c_d@a.b"); the caller
+  // absorbs the preceding nodes into the link.
   let ls = i;
-  while (ls > textStart && isEmailLocalChar(s[ls - 1])) ls--;
+  while (ls > 0 && isEmailLocalChar(s[ls - 1])) ls--;
   if (ls === i) return null;
   const domEnd = scanDomain(s, i + 1);
   if (domEnd < 0) return null;
@@ -1526,10 +1528,14 @@ function tryBareEmail(s, i, textStart) {
   if (!EMAIL_RE.test(email)) return null;
   // The local part must contain an alphanumeric character.
   if (!/[a-zA-Z0-9]/.test(email.slice(0, i - ls))) return null;
-  // The character after the email must not be a valid email character,
-  // otherwise this is only a prefix of a longer (invalid) address. A
-  // trailing "." is sentence punctuation, not part of the address.
-  if (domEnd < s.length && isEmailLocalChar(s[domEnd]) && s[domEnd] !== '.') return null;
+  // The character after the email must not be one that could continue
+  // the address (an alphanumeric, "-", "_" or "+"): otherwise this is
+  // only a prefix of a longer (invalid) address. A trailing "." or "/"
+  // is punctuation, not part of the address.
+  if (domEnd < s.length) {
+    const after = s[domEnd];
+    if (isAlnumCode(after.charCodeAt(0)) || after === '-' || after === '_' || after === '+') return null;
+  }
   // A scheme immediately before the address ("mailto:foo@bar.baz") is
   // part of the link.
   let start = ls;
@@ -1540,10 +1546,27 @@ function tryBareEmail(s, i, textStart) {
     while (ss > 0 && /[a-zA-Z0-9+.-]/.test(s[ss - 1])) ss--;
     if (ss < ls - 1 && /[a-zA-Z]/.test(s[ss])) {
       start = ss;
-      text = s.slice(ss, domEnd);
+      // A scheme address may carry a single path segment ("/txt"): the
+      // "/" plus the characters up to the next "/", whitespace or "<".
+      // A lone trailing "/" is not a path.
+      let end = domEnd;
+      if (s[end] === '/' && end + 1 < s.length) {
+        const nx = s[end + 1];
+        if (nx !== ' ' && nx !== '\t' && nx !== '\n' && nx !== '<' && nx !== '/') {
+          let k = end + 1;
+          while (k < s.length) {
+            const ch = s[k];
+            if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '<' || ch === '/') break;
+            k++;
+          }
+          const trimmed = trimUrlEnd(s.slice(ss, k));
+          end = ss + trimmed.length;
+        }
+      }
+      text = s.slice(ss, end);
       href = cleanUrl(text);
       if (href === null) return null;
-      return { end: domEnd, href, text, localStart: start };
+      return { end, href, text, localStart: start };
     }
   }
   href = cleanUrl('mailto:' + email);
@@ -1899,6 +1922,31 @@ function scanInline(st, s) {
     if (ch === '@') {
       const em = !hasActiveBracket(st) ? tryBareEmail(s, i, textStart) : null;
       if (em) {
+        // The local part may extend before the current text run (an
+        // emphasis delimiter such as "_" is a valid local-part char):
+        // absorb the preceding text and "_" / "~" delimiter nodes into
+        // the email, truncating a text node if only its tail belongs.
+        if (em.localStart < textStart) {
+          let need = textStart - em.localStart;
+          let nd = topList.tail;
+          while (nd && need > 0) {
+            const prev = nd.prev;
+            if (nd.t === 'text') {
+              if (nd.s.length <= need) {
+                need -= nd.s.length;
+                listRemove(topList, nd);
+              } else {
+                nd.s = nd.s.slice(0, nd.s.length - need);
+                need = 0;
+              }
+            } else if (nd.t === 'delim' && (nd.ch === '_' || nd.ch === '~') && nd.n <= need) {
+              need -= nd.n;
+              delimRemove(st, nd);
+              listRemove(topList, nd);
+            } else break;
+            nd = prev;
+          }
+        }
         flushText(em.localStart);
         const childList = mkList(st.nextPid++);
         listAppend(childList, { t: 'text', s: em.text });
