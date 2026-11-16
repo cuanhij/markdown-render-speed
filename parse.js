@@ -1520,7 +1520,14 @@ function tryBareEmail(s, i, textStart) {
   // "_" is a valid local-part character (e.g. "a.b-c_d@a.b"); the caller
   // absorbs the preceding nodes into the link.
   let ls = i;
-  while (ls > 0 && isEmailLocalChar(s[ls - 1])) ls--;
+  while (ls > 0 && isEmailLocalChar(s[ls - 1])) {
+    // A run of two or more identical emphasis delimiters ("__", "**")
+    // opens or closes emphasis; it is not part of the address. A single
+    // "_" inside the address (e.g. "a.b-c_d") is part of it.
+    const c = s[ls - 1];
+    if ((c === '_' || c === '*' || c === '~') && ls - 1 > 0 && s[ls - 2] === c) break;
+    ls--;
+  }
   if (ls === i) return null;
   const domEnd = scanDomain(s, i + 1);
   if (domEnd < 0) return null;
@@ -1534,7 +1541,11 @@ function tryBareEmail(s, i, textStart) {
   // is punctuation, not part of the address.
   if (domEnd < s.length) {
     const after = s[domEnd];
-    if (isAlnumCode(after.charCodeAt(0)) || after === '-' || after === '_' || after === '+') return null;
+    // A "_" that is part of a "__" emphasis run does not continue the
+    // address; a lone "_" does.
+    if (after === '_' && s[domEnd + 1] === '_') {
+      // fall through: the "__" closes emphasis, the email is complete
+    } else if (isAlnumCode(after.charCodeAt(0)) || after === '-' || after === '_' || after === '+') return null;
   }
   // A scheme immediately before the address ("mailto:foo@bar.baz") is
   // part of the link.
