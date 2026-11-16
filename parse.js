@@ -158,6 +158,30 @@ function advanceCols(line, n) {
     } else break;
   }
 }
+// Expand tabs in the leading whitespace of a code line to spaces, based
+// on the column at which the line starts (tabs advance to the next
+// multiple of 4). Tabs after the first non-whitespace character are kept.
+function expandTabs(s, startCol) {
+  if (s.indexOf('\t') < 0) return s;
+  let out = '';
+  let col = startCol;
+  let i = 0;
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === '\t') {
+      const w = 4 - (col % 4);
+      out += ' '.repeat(w);
+      col += w;
+      i++;
+    } else if (ch === ' ') {
+      out += ch;
+      col++;
+      i++;
+    } else break;
+  }
+  return out + s.slice(i);
+}
+
 function lineBlank(line) {
   for (let i = line.off; i < line.s.length; i++) {
     const ch = line.s[i];
@@ -394,7 +418,7 @@ function buildBlocks(root, rawLines, refs) {
       }
       if (t.t === 'code') {
         const inf = indentInfo(line);
-        if (inf.cols >= 4) { advanceCols(line, 4); t.lines.push(restOf(line)); }
+        if (inf.cols >= 4) { advanceCols(line, 4); t.lines.push(expandTabs(restOf(line), line.col)); }
         else t.lines.push('');
         continue;
       }
@@ -403,8 +427,13 @@ function buildBlocks(root, rawLines, refs) {
         else { t.lines.push(restOf(line)); continue; }
       }
       if (tip().t === 'para') closeTo(stack.length - 1);
-      // A blank line ends a table (later lines are not body rows).
-      if (tip().t === 'table') closeTo(stack.length - 1);
+      // A blank line ends a table (later lines are not body rows), but a
+      // line that is only whitespace (e.g. a tab) is an empty table row,
+      // not a blank line: it stays in the table.
+      if (tip().t === 'table') {
+        if (line.s.length > 0 && tryTableRow(line, tip())) { pendingBlank = null; continue; }
+        closeTo(stack.length - 1);
+      }
       // A blank line only makes a list loose when it separates two blocks
       // that are children of the same item, so only record it when the
       // tip itself is the item (not a block nested inside it, e.g. a
@@ -438,6 +467,11 @@ function buildBlocks(root, rawLines, refs) {
           continue;
         }
         if (r === 2) { failIdx = i; newItem = true; break; }
+        // A fenced code block's content lines do not need to match the
+        // list item's content indent: the line stays in the fence (the
+        // fence indent is stripped from whatever is there by the leaf
+        // continuation below). A block quote marker is still required.
+        if (tip().t === 'fence') { failIdx = stack.length; break; }
         failIdx = i; break;
       }
     }
@@ -543,7 +577,7 @@ function buildBlocks(root, rawLines, refs) {
       const inf = indentInfo(line);
       if (inf.cols >= 4) {
         advanceCols(line, 4);
-        t.lines.push(restOf(line));
+        t.lines.push(expandTabs(restOf(line), line.col));
         pendingBlank = null;
         continue;
       }
@@ -1147,7 +1181,11 @@ function tryStartBlock(line, stack, addBlock, refs, pendingBlank) {
   if (m) {
     if (tipNode.t === 'para') {
       if (m.empty) return false;
-      if (m.type === 'ordered' && m.start !== 1) return false;
+      // An ordered list can interrupt a paragraph only when it starts
+      // with 1, except when the paragraph is the content of a list item
+      // and the marker starts a nested list inside that item.
+      if (m.type === 'ordered' && m.start !== 1 &&
+          stack[stack.length - 2].t !== 'item') return false;
     }
     closeParaTip(stack, refs);
     line.off = m.afterMarker;
@@ -1398,17 +1436,19 @@ function trimUrlEnd(url) {
   return url.slice(0, end);
 }
 
-// Try a bare URL at s[i] (www. or http(s)://). The caller checks the
+// Try a bare URL at s[i] (www. or http(s)://). The scheme is matched
+// case-insensitively ("Https://" is a link). The caller checks the
 // preceding character. Returns { end, href, text } or null.
 function tryBareUrl(s, i) {
   let scheme = '';
   let j = i;
-  if (s.startsWith('www.', i)) {
+  const lower = s.slice(i, i + 8).toLowerCase();
+  if (lower.startsWith('www.')) {
     scheme = 'http://';
     j = i + 4;
-  } else if (s.startsWith('https://', i)) {
+  } else if (lower.startsWith('https://')) {
     j = i + 8;
-  } else if (s.startsWith('http://', i)) {
+  } else if (lower.startsWith('http://')) {
     j = i + 7;
   } else return null;
   const domEnd = scanDomain(s, j);
@@ -1781,7 +1821,7 @@ function scanInline(st, s) {
       i++;
       continue;
     }
-    if (ch === 'w' && s.startsWith('www.', i)) {
+    if ((ch === 'w' || ch === 'W') && s.slice(i, i + 4).toLowerCase() === 'www.') {
       const prev = i > 0 ? s[i - 1] : ' ';
       if (isWsChar(prev) || prev === '*' || prev === '_' || prev === '~' || prev === '(' || prev === '[' || prev === '<') {
         const u = tryBareUrl(s, i);
@@ -1797,7 +1837,7 @@ function scanInline(st, s) {
       i++;
       continue;
     }
-    if (ch === 'h' && (s.startsWith('http://', i) || s.startsWith('https://', i))) {
+    if ((ch === 'h' || ch === 'H') && (s.slice(i, i + 7).toLowerCase() === 'http://' || s.slice(i, i + 8).toLowerCase() === 'https://')) {
       const prev = i > 0 ? s[i - 1] : ' ';
       if (isWsChar(prev) || prev === '*' || prev === '_' || prev === '~' || prev === '(' || prev === '[' || prev === '<') {
         const u = tryBareUrl(s, i);
