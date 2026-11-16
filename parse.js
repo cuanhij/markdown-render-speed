@@ -403,6 +403,8 @@ function buildBlocks(root, rawLines, refs) {
         else { t.lines.push(restOf(line)); continue; }
       }
       if (tip().t === 'para') closeTo(stack.length - 1);
+      // A blank line ends a table (later lines are not body rows).
+      if (tip().t === 'table') closeTo(stack.length - 1);
       // A blank line only makes a list loose when it separates two blocks
       // that are children of the same item, so only record it when the
       // tip itself is the item (not a block nested inside it, e.g. a
@@ -885,7 +887,9 @@ function splitTableRow(s) {
   while (i < n) {
     const ch = s[i];
     if (ch === '\\' && i + 1 < n && (s[i + 1] === '|' || s[i + 1] === '\\')) {
-      cur += s[i] + s[i + 1]; i += 2;
+      // An escaped pipe (or backslash) is the literal character; the
+      // backslash itself does not survive into the cell.
+      cur += s[i + 1]; i += 2;
     } else if (ch === '|') {
       cells.push(cur); cur = ''; i++;
     } else {
@@ -903,7 +907,7 @@ function splitTableRow(s) {
 function tryTableRow(line, table) {
   if (isThematicBreak(line) || tryAtx(line) || tryFence(line) ||
       tryHtmlBlock(line) || parseListMarker(line) || isQuoteStart(line)) return false;
-  table.rows.push(restOf(line));
+  table.rows.push(splitTableRow(restOf(line)));
   return true;
 }
 
@@ -1379,7 +1383,9 @@ function trimUrlEnd(url) {
     }
     if (last === ';') {
       const amp = url.lastIndexOf('&', end - 2);
-      if (amp >= 0 && /^[a-zA-Z0-9]+$/.test(url.slice(amp + 1, end - 1))) break;
+      // A trailing "&xxx;" looks like an entity reference, so it is not
+      // part of the URL: trim the whole "&xxx;".
+      if (amp >= 0 && /^[a-zA-Z0-9]+$/.test(url.slice(amp + 1, end - 1))) { end = amp; break; }
       end--;
       continue;
     }
@@ -1595,7 +1601,6 @@ function scanInline(st, s) {
       let k = i;
       while (k < n && s[k] === ch) k++;
       const runLen = k - i;
-      if (ch === '~' && runLen === 1) { i = k; continue; }
       const fl = flanking(s, i, runLen);
       let canOpen;
       let canClose;
@@ -1905,13 +1910,13 @@ function processEmphasis(st) {
   let closer = st.dHead;
   while (closer) {
     const nextCloser = closer.nd;
-    if (closer.t === 'delim' && closer.canClose && !(closer.ch === '~' && closer.n < 2)) {
+    if (closer.t === 'delim' && closer.canClose && !(closer.ch === '~' && closer.n > 2)) {
       const ch = closer.ch;
       let opener = closer.pd;
       let found = null;
       let useDelims = 0;
       while (opener) {
-        if (opener.t === 'delim' && opener.ch === ch && opener.canOpen && opener.pid === closer.pid && !(ch === '~' && opener.n < 2)) {
+        if (opener.t === 'delim' && opener.ch === ch && opener.canOpen && opener.pid === closer.pid && !(ch === '~' && opener.n > 2)) {
           const oddMatch = (opener.canOpen && opener.canClose) || (closer.canOpen && closer.canClose);
           let ok = true;
           if (oddMatch) {
@@ -1977,18 +1982,35 @@ function renderTable(b, refs) {
     if (b.aligns[i]) out += ' align="' + b.aligns[i] + '"';
     out += '>' + inlineParse(b.head[i], refs) + '</th>\n';
   }
-  out += '</tr>\n</thead>\n<tbody>\n';
-  for (const row of b.rows) {
-    out += '<tr>\n';
-    for (let i = 0; i < b.head.length; i++) {
-      out += '<td';
-      if (b.aligns[i]) out += ' align="' + b.aligns[i] + '"';
-      out += '>' + inlineParse(row[i] !== undefined ? row[i] : '', refs) + '</td>\n';
+  out += '</tr>\n</thead>\n';
+  if (b.rows.length) {
+    out += '<tbody>';
+    for (const row of b.rows) {
+      out += '<tr>\n';
+      for (let i = 0; i < b.head.length; i++) {
+        out += '<td';
+        if (b.aligns[i]) out += ' align="' + b.aligns[i] + '"';
+        out += '>' + inlineParse(row[i] !== undefined ? row[i] : '', refs) + '</td>\n';
+      }
+      out += '</tr>\n';
     }
-    out += '</tr>\n';
+    out += '</tbody>';
   }
-  out += '</tbody>\n</table>\n';
+  out += '</table>\n';
   return out;
+}
+
+// A GFM task-list checkbox at the start of a list item's first paragraph:
+// "[ ]" (unchecked) or "[x]" / "[X]" (checked), followed by a space or
+// the end of the text. Returns { html, rest } or null.
+function taskCheckbox(text) {
+  if (text.length < 3 || text[0] !== '[' || text[2] !== ']') return null;
+  const c = text[1];
+  if (c !== ' ' && c !== 'x' && c !== 'X') return null;
+  const after = text[3];
+  if (after !== undefined && after !== ' ' && after !== '\t') return null;
+  const html = (c === ' ' ? '<input disabled="" type="checkbox">' : '<input checked="" disabled="" type="checkbox">');
+  return { html, rest: text.slice(3) };
 }
 
 function renderList(b, refs, isLast) {
@@ -1999,16 +2021,25 @@ function renderList(b, refs, isLast) {
   for (let j = 0; j < b.children.length; j++) {
     const item = b.children[j];
     const itemIsLast = isLast && j === b.children.length - 1;
+    const kids = item.children;
+    let cb = null;
+    if (kids.length && kids[0].t === 'para') cb = taskCheckbox(kids[0].lines.join('\n'));
     if (b.tight) {
       out += '<li>';
-      const kids = item.children;
+      if (cb) out += cb.html;
       for (let i = 0; i < kids.length; i++) {
-        out += renderBlock(kids[i], refs, true, itemIsLast && i === kids.length - 1);
+        if (i === 0 && cb) out += inlineParse(cb.rest, refs);
+        else out += renderBlock(kids[i], refs, true, itemIsLast && i === kids.length - 1);
       }
       out += '</li>\n';
     } else {
       out += '<li>';
-      out += renderBlocks(item.children, refs, false, itemIsLast);
+      if (cb) {
+        out += '<p>' + cb.html + inlineParse(cb.rest, refs) + '</p>\n';
+        out += renderBlocks(kids.slice(1), refs, false, itemIsLast);
+      } else {
+        out += renderBlocks(item.children, refs, false, itemIsLast);
+      }
       out += '</li>\n';
     }
   }
