@@ -290,7 +290,18 @@ function matchQuoteMarker(line) {
   line.off = inf.off + 1;
   line.col = line.col + inf.cols + 1;
   if (line.s[line.off] === ' ') { line.off++; line.col++; }
-  else if (line.s[line.off] === '\t') advanceCols(line, 1);
+  else if (line.s[line.off] === '\t') {
+    // A tab right after '>' is expanded from the column measured from
+    // the marker, not from the start of the line: the tab sits one
+    // column past '>', so it spans to the next multiple of 4 (3 wide),
+    // and consuming one of those columns as the optional space leaves
+    // 2. (Expanding from the absolute column leaves 3, which marked
+    // does not do — doc-30's tilde fence in a quote.)
+    const rel = line.col - line.quoteCol;
+    const w = 4 - (rel % 4);
+    line.s = line.s.slice(0, line.off) + ' '.repeat(w) + line.s.slice(line.off + 1);
+    line.off++; line.col++;
+  }
   return true;
 }
 
