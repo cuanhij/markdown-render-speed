@@ -414,9 +414,10 @@ function buildBlocks(root, rawLines, refs) {
     if (lineBlank(line)) {
       // An HTML block of types 1-5 followed by a blank line loses its
       // trailing newline (but a blank line inside a still-open HTML block
-      // is part of the block, not after it).
+      // is part of the block, not after it). A line containing only a
+      // tab does not count: marked keeps the trailing newline after it.
       if (lastAdded && lastAdded.t === 'html' && lastAdded.htmlType <= 5 &&
-          stack.indexOf(lastAdded) < 0) {
+          stack.indexOf(lastAdded) < 0 && line.s.indexOf('\t') < 0) {
         lastAdded.blankAfter = true;
       }
       // A blank line must carry a block quote marker to stay inside a
@@ -1259,9 +1260,13 @@ function tryStartBlock(line, stack, addBlock, refs, pendingBlank) {
   if (fence) {
     closeParaTip(stack, refs);
     // Inside a blockquote, marked keeps the fence content's leading
-    // spaces (the fence indent is not stripped from content lines).
+    // spaces when the fence is indented 2+ (the fence indent is not
+    // stripped from content lines); a fence indented 0-1 strips
+    // normally.
     let fIndent = fence.fenceIndent;
-    for (let q = 1; q < stack.length; q++) if (stack[q].t === 'quote') { fIndent = 0; break; }
+    for (let q = 1; q < stack.length; q++) {
+      if (stack[q].t === 'quote' && fIndent >= 2) { fIndent = 0; break; }
+    }
     const node = { t: 'fence', lines: [], fenceChar: fence.fenceChar, fenceLen: fence.fenceLen, fenceIndent: fIndent, info: fence.info };
     addBlock(node);
     stack.push(node);
