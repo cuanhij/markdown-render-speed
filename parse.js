@@ -767,6 +767,7 @@ function matchHtmlTag(s, i) {
     return s[k] === '>' ? { end: k + 1, name, closing } : null;
   }
   for (;;) {
+    const beforeWs = k;
     while (k < s.length && (s[k] === ' ' || s[k] === '\t' || s[k] === '\n')) k++;
     if (k >= s.length) return null;
     if (s[k] === '>') return { end: k + 1, name, closing };
@@ -774,6 +775,9 @@ function matchHtmlTag(s, i) {
       if (s[k + 1] === '>') return { end: k + 2, name, closing };
       return null;
     }
+    // An attribute must be preceded by whitespace; otherwise this is not
+    // a tag at all (e.g. "<MAILTO:FOO@BAR.BAZ>" is an autolink).
+    if (k === beforeWs) return null;
     const aStart = k;
     while (k < s.length && s[k] !== ' ' && s[k] !== '\t' && s[k] !== '\n' && s[k] !== '=' && s[k] !== '/' && s[k] !== '>') k++;
     if (k === aStart) return null;
@@ -1671,14 +1675,15 @@ function scanInline(st, s) {
       }
       delimRemove(st, b);
       // A link cannot contain another link: when a link (not an image)
-      // forms, deactivate every bracket opened before this link's opener,
-      // so no outer link can form around it. An image may sit inside a
-      // link, so forming an image deactivates nothing.
+      // forms, deactivate every link bracket opened before this link's
+      // opener, so no outer link can form around it. An image may sit
+      // inside a link, and a link may sit inside an image's label (it
+      // becomes plain alt text), so image brackets stay active.
       if (!b.isImage) {
         let d = st.dHead;
         while (d) {
           const nx = d.nd;
-          if (d.t === 'bracket' && d.active) d.active = false;
+          if (d.t === 'bracket' && d.active && !d.isImage) d.active = false;
           d = nx;
         }
       }
@@ -1740,7 +1745,7 @@ function scanInline(st, s) {
     }
     if (ch === 'w' && s.startsWith('www.', i)) {
       const prev = i > 0 ? s[i - 1] : ' ';
-      if (isWsChar(prev) || prev === '*' || prev === '_' || prev === '~' || prev === '(' || prev === '[') {
+      if (isWsChar(prev) || prev === '*' || prev === '_' || prev === '~' || prev === '(' || prev === '[' || prev === '<') {
         const u = tryBareUrl(s, i);
         if (u) {
           flushText(i);
@@ -1756,7 +1761,7 @@ function scanInline(st, s) {
     }
     if (ch === 'h' && (s.startsWith('http://', i) || s.startsWith('https://', i))) {
       const prev = i > 0 ? s[i - 1] : ' ';
-      if (isWsChar(prev) || prev === '*' || prev === '_' || prev === '~' || prev === '(' || prev === '[') {
+      if (isWsChar(prev) || prev === '*' || prev === '_' || prev === '~' || prev === '(' || prev === '[' || prev === '<') {
         const u = tryBareUrl(s, i);
         if (u) {
           flushText(i);
