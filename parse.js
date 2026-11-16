@@ -102,86 +102,100 @@ function escapeHtml(s, encode) {
   return out;
 }
 
-// Decode numeric character references in a run of plain text, as marked
-// does: &#35; becomes #, &#x41; becomes A, zero / out of range / surrogate
-// becomes U+FFFD, &#38; becomes &amp;, and a bare & that is not part of a
-// numeric reference becomes &amp; so it cannot join its neighbours into a
-// new reference. Named references are left alone.
-function decodeNumeric(s) {
-  if (s.indexOf('&') < 0) return s;
+// One-pass text rendering for plain text nodes: what marked does by
+// decoding numeric character references and then escaping HTML, in a
+// single scan instead of two. &#35; becomes #, &#x41; becomes A, zero /
+// out of range / surrogate becomes U+FFFD, &#38; becomes &amp;, and a bare
+// & that is not part of a numeric reference becomes &amp; so it cannot
+// join its neighbours into a new reference. Named references are left
+// alone. A decoded character that is itself one of & < > " ' is escaped
+// exactly as the two-pass version escapes it.
+function escapeText(s) {
+  if (s.indexOf('&') < 0 && s.indexOf('<') < 0 && s.indexOf('>') < 0 && s.indexOf('"') < 0 && s.indexOf("'") < 0) return s;
   let out = '';
   let start = 0;
   for (let i = 0; i < s.length; i++) {
-    if (s.charCodeAt(i) !== 38) continue;
-    // numeric reference?
-    let j = i + 1;
-    let code = -1;
-    let ok = false;
-    if (j < s.length && s.charCodeAt(j) === 35) {
-      j++;
-      if (j < s.length && (s.charCodeAt(j) === 120 || s.charCodeAt(j) === 88)) {
+    const c = s.charCodeAt(i);
+    let rep = null;
+    if (c === 38) { // &
+      let j = i + 1;
+      let code = -1;
+      let ok = false;
+      if (j < s.length && s.charCodeAt(j) === 35) {
         j++;
-        const h0 = j;
-        let v = 0;
-        while (j < s.length && j - h0 < 6) {
-          const c = s.charCodeAt(j);
-          let d = -1;
-          if (c >= 48 && c <= 57) d = c - 48;
-          else if (c >= 65 && c <= 70) d = c - 55;
-          else if (c >= 97 && c <= 102) d = c - 87;
-          if (d < 0) break;
-          v = v * 16 + d;
+        if (j < s.length && (s.charCodeAt(j) === 120 || s.charCodeAt(j) === 88)) {
           j++;
+          const h0 = j;
+          let v = 0;
+          while (j < s.length && j - h0 < 6) {
+            const d = s.charCodeAt(j);
+            let dv = -1;
+            if (d >= 48 && d <= 57) dv = d - 48;
+            else if (d >= 65 && d <= 70) dv = d - 55;
+            else if (d >= 97 && d <= 102) dv = d - 87;
+            if (dv < 0) break;
+            v = v * 16 + dv;
+            j++;
+          }
+          if (j > h0 && j < s.length && s.charCodeAt(j) === 59) { code = v; ok = true; }
+        } else {
+          const d0 = j;
+          let v = 0;
+          while (j < s.length && j - d0 < 7) {
+            const d = s.charCodeAt(j);
+            if (d < 48 || d > 57) break;
+            v = v * 10 + (d - 48);
+            j++;
+          }
+          if (j > d0 && j < s.length && s.charCodeAt(j) === 59) { code = v; ok = true; }
         }
-        if (j > h0 && j < s.length && s.charCodeAt(j) === 59) { code = v; ok = true; }
-      } else {
-        const d0 = j;
-        let v = 0;
-        while (j < s.length && j - d0 < 7) {
-          const c = s.charCodeAt(j);
-          if (c < 48 || c > 57) break;
-          v = v * 10 + (c - 48);
-          j++;
-        }
-        if (j > d0 && j < s.length && s.charCodeAt(j) === 59) { code = v; ok = true; }
       }
       if (ok) {
         if (start < i) out += s.slice(start, i);
         if (code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) out += '\ufffd';
         else if (code === 38) out += '&amp;';
+        else if (code === 60) out += '&lt;';
+        else if (code === 62) out += '&gt;';
+        else if (code === 34) out += '&quot;';
+        else if (code === 39) out += '&#39;';
         else out += String.fromCodePoint(code);
         i = j;
         start = j + 1;
         continue;
       }
-    }
-    // bare & that is not the start of any valid reference: escape it.
-    let k = i + 1;
-    let valid = false;
-    if (k < s.length && s.charCodeAt(k) === 35) {
-      k++;
-      if (k < s.length && (s.charCodeAt(k) === 120 || s.charCodeAt(k) === 88)) {
+      // not a valid numeric reference: a valid named reference is left
+      // alone, anything else becomes &amp;
+      let k = i + 1;
+      let valid = false;
+      if (k < s.length && s.charCodeAt(k) === 35) {
         k++;
-        const h0 = k;
-        while (k < s.length && ((s.charCodeAt(k) >= 48 && s.charCodeAt(k) <= 57) || (s.charCodeAt(k) >= 65 && s.charCodeAt(k) <= 70) || (s.charCodeAt(k) >= 97 && s.charCodeAt(k) <= 102))) k++;
-        if (k > h0 && k < s.length && s.charCodeAt(k) === 59 && k - h0 <= 6) valid = true;
+        if (k < s.length && (s.charCodeAt(k) === 120 || s.charCodeAt(k) === 88)) {
+          k++;
+          const h0 = k;
+          while (k < s.length && ((s.charCodeAt(k) >= 48 && s.charCodeAt(k) <= 57) || (s.charCodeAt(k) >= 65 && s.charCodeAt(k) <= 70) || (s.charCodeAt(k) >= 97 && s.charCodeAt(k) <= 102))) k++;
+          if (k > h0 && k < s.length && s.charCodeAt(k) === 59 && k - h0 <= 6) valid = true;
+        } else {
+          const d0 = k;
+          while (k < s.length && s.charCodeAt(k) >= 48 && s.charCodeAt(k) <= 57) k++;
+          if (k > d0 && k < s.length && s.charCodeAt(k) === 59 && k - d0 <= 7) valid = true;
+        }
       } else {
-        const d0 = k;
-        while (k < s.length && s.charCodeAt(k) >= 48 && s.charCodeAt(k) <= 57) k++;
-        if (k > d0 && k < s.length && s.charCodeAt(k) === 59 && k - d0 <= 7) valid = true;
+        const w0 = k;
+        while (k < s.length) {
+          const wc = s.charCodeAt(k);
+          if ((wc >= 48 && wc <= 57) || (wc >= 65 && wc <= 90) || (wc >= 97 && wc <= 122) || wc === 95) k++;
+          else break;
+        }
+        if (k > w0 && k < s.length && s.charCodeAt(k) === 59) valid = true;
       }
-    } else {
-      const w0 = k;
-      while (k < s.length) {
-        const wc = s.charCodeAt(k);
-        if ((wc >= 48 && wc <= 57) || (wc >= 65 && wc <= 90) || (wc >= 97 && wc <= 122) || wc === 95) k++;
-        else break;
-      }
-      if (k > w0 && k < s.length && s.charCodeAt(k) === 59) valid = true;
-    }
-    if (!valid) {
+      if (!valid) rep = '&amp;';
+    } else if (c === 60) rep = '&lt;';
+    else if (c === 62) rep = '&gt;';
+    else if (c === 34) rep = '&quot;';
+    else if (c === 39) rep = '&#39;';
+    if (rep !== null) {
       if (start < i) out += s.slice(start, i);
-      out += '&amp;';
+      out += rep;
       start = i + 1;
     }
   }
@@ -366,8 +380,12 @@ function maskSrc(src, refs) {
     if (code) return code + match0.slice(code.length, -code.length).replace(/`/g, '+') + code;
     return match0;
   });
-  // Mask out links, code spans and html tags to [aaa...].
-  m = m.replace(BLOCKSKIP, (match0) => '[' + 'a'.repeat(match0.length - 2) + ']');
+  // Mask out links, code spans and html tags to [aaa...]. With no '['
+  // and no '<' there is nothing for this pass to mask: links and tags
+  // cannot occur, and code spans are already masked above.
+  if (src.indexOf('[') >= 0 || src.indexOf('<') >= 0) {
+    m = m.replace(BLOCKSKIP, (match0) => '[' + 'a'.repeat(match0.length - 2) + ']');
+  }
   return m;
 }
 
@@ -910,7 +928,7 @@ function scanInline(src, refs, ctx) {
         while (k < n && (src[k] === ' ' || src[k] === '\t')) k++;
         if (k < n && src[k] !== '\n') {
           // strip the trailing spaces from buf
-          buf = buf.replace(/ +$/, '');
+          while (buf.length > 0 && buf.charCodeAt(buf.length - 1) === 32) buf = buf.slice(0, -1);
           flush();
           nodes.push(['br']);
           i = k;
@@ -2312,7 +2330,8 @@ function lastCharOf(nodes) {
 // a run at every offset), runLength L for rules 9-10, and midRun when
 // the source character before it is the same delimiter. Flanking is
 // per run, from the source char before the run (runPrev) and the char
-// after it (next).
+// after it (next). Each entry also records its node's index (idx) so the
+// resolver never scans the nodes array to find a delimiter again.
 function buildDelims(nodes) {
   const delims = [];
   let i = 0;
@@ -2344,7 +2363,7 @@ function buildDelims(nodes) {
       // positions is followed by another `~`, so it never opens or closes
       const valid = ch !== '~' || runLen < 3 || k >= runLen - 2;
       delims.push({
-        node: nodes[i + k], ch, runLen, posInRun: k,
+        node: nodes[i + k], idx: i + k, ch, runLen, posInRun: k,
         lLength: ch === '~' ? Math.min(runLen - k, 2) : runLen - k,
         midRun: k > 0 || runPrev === ch,
         canOpen: valid && canOpen, canClose: valid && canClose,
@@ -2419,7 +2438,7 @@ function processEmphasis(nodes) {
         if (C.used || C.ch !== D.ch || C.posInRun !== 0) continue;
         if (!C.canOpen && !C.canClose) continue;
         // an orphan inside a pair of the opposite delimiter is skipped
-        if (isOrphan(nodes, nodes.indexOf(D.node), nodes.indexOf(C.node), D.ch)) continue;
+        if (isOrphan(nodes, D.idx, C.idx, D.ch)) continue;
         const cLeftOnly = C.canOpen && !C.canClose;
         const cEither = C.canOpen && C.canClose;
         if (cLeftOnly) { delimTotal += C.runLen; continue; }
@@ -2439,8 +2458,8 @@ function processEmphasis(nodes) {
     }
     if (!closer) { di++; continue; }
     const use = D.ch === '~' ? lLength : (Math.min(lLength, rLength) % 2 === 1 ? 1 : 2);
-    const oIdx = nodes.indexOf(D.node);
-    const cIdx = nodes.indexOf(closer.node);
+    const oIdx = D.idx;
+    const cIdx = closer.idx;
     if (oIdx < 0 || cIdx < 0 || oIdx >= cIdx) { di++; continue; }
     // the span consumes `use` opener chars from oIdx and `use` closer
     // chars ending at cIdx + rLength - 1; the opener's spare chars and
@@ -2453,8 +2472,7 @@ function processEmphasis(nodes) {
     for (let k = di; k < delims.length; k++) {
       const e = delims[k];
       if (e.used) continue;
-      const idx = nodes.indexOf(e.node);
-      if (idx >= oIdx && idx < cIdx + rLength) e.used = true;
+      if (e.idx >= oIdx && e.idx < cIdx + rLength) e.used = true;
     }
     // the closer's characters beyond rLength stay after the span; their
     // run now starts after the span's raw, so its previous character is
@@ -2463,8 +2481,7 @@ function processEmphasis(nodes) {
       for (let k = di + 1; k < delims.length; k++) {
         const e = delims[k];
         if (e.used || e.ch !== closer.ch) continue;
-        const idx = nodes.indexOf(e.node);
-        if (idx < cIdx + rLength || idx >= cIdx + closer.runLen) continue;
+        if (e.idx < cIdx + rLength || e.idx >= cIdx + closer.runLen) continue;
         // the remaining characters form a new, shorter run starting here
         e.runLen = closer.runLen - rLength;
         e.posInRun = e.posInRun - rLength;
@@ -2487,6 +2504,13 @@ function processEmphasis(nodes) {
       }
     }
     nodes.splice(oIdx, (cIdx + rLength) - oIdx, wrap);
+    // the splice removed (cIdx + rLength - oIdx) nodes and put one back,
+    // so every surviving entry after the span shifts by this delta
+    const delta = 1 - ((cIdx + rLength) - oIdx);
+    for (let k = 0; k < delims.length; k++) {
+      const e = delims[k];
+      if (!e.used && e.idx >= cIdx + rLength) e.idx += delta;
+    }
     di++;
   }
 }
@@ -2503,7 +2527,7 @@ function renderInline(nodes, out) {
     if (t === 't') {
       if (nd[2]) out.push(nd[1]);
       else if (nd[3]) out.push(escapeHtml(nd[1], false));
-      else out.push(escapeHtml(decodeNumeric(nd[1]), false));
+      else out.push(escapeText(nd[1]));
     } else if (t === 'esc') {
       out.push(escapeHtml(nd[1], false));
     } else if (t === 'code') {
