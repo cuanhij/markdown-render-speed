@@ -817,6 +817,11 @@ function matchHtmlTag(s, i) {
     while (k < s.length && (s[k] === ' ' || s[k] === '\t' || s[k] === '\n')) k++;
     return s[k] === '>' ? { end: k + 1, name, closing } : null;
   }
+  // Whether whitespace was skipped after the previous attribute name
+  // (before its "=" or before the next attribute): a boolean attribute
+  // such as "_boolean" is followed by whitespace that the next loop
+  // iteration must count as preceding the next attribute.
+  let wsAfterName = false;
   for (;;) {
     const beforeWs = k;
     while (k < s.length && (s[k] === ' ' || s[k] === '\t' || s[k] === '\n')) k++;
@@ -828,7 +833,8 @@ function matchHtmlTag(s, i) {
     }
     // An attribute must be preceded by whitespace; otherwise this is not
     // a tag at all (e.g. "<MAILTO:FOO@BAR.BAZ>" is an autolink).
-    if (k === beforeWs) return null;
+    if (k === beforeWs && !wsAfterName) return null;
+    wsAfterName = false;
     // An attribute name starts with a letter, "_" or ":" and continues
     // with letters, digits, "_", ".", ":" or "-".
     if (!/[a-zA-Z_:]/.test(s[k])) return null;
@@ -836,8 +842,13 @@ function matchHtmlTag(s, i) {
     k++;
     while (k < s.length && /[a-zA-Z0-9_.:-]/.test(s[k])) k++;
     if (k === aStart) return null;
+    const afterName = k;
     while (k < s.length && (s[k] === ' ' || s[k] === '\t' || s[k] === '\n')) k++;
+    wsAfterName = k > afterName;
     if (s[k] === '=') {
+      // A valued attribute resets the flag: the next attribute's
+      // preceding whitespace is the loop's own leading skip.
+      wsAfterName = false;
       k++;
       while (k < s.length && (s[k] === ' ' || s[k] === '\t' || s[k] === '\n')) k++;
       if (s[k] === '"') {
